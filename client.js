@@ -294,7 +294,7 @@ window.__ModuleLoader__.load({
 .md2pdf-card {
   position: relative;
   width: 178px;
-  height: 148px;
+  height: 162px;
   padding: 5px;
   border: 1px solid var(--dsw-alias-border-l2, #d7dce3);
   border-radius: 10px;
@@ -311,7 +311,7 @@ window.__ModuleLoader__.load({
   gap: 4px;
   width: 100%;
   height: 100%;
-  padding: 0 0 26px;
+  padding: 0 0 24px;
   margin: 0;
   border: 0;
   border-radius: 8px;
