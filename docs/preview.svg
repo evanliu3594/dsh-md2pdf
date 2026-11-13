@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="300" viewBox="0 0 640 300" role="img" aria-label="A markdown page and the PDF page produced from it">
+  <g fill="none" stroke="#b9cadd" stroke-width="2">
+    <rect x="64.5" y="48.5" width="186" height="203" rx="10" fill="#f7f9fc"/>
+    <rect x="386.5" y="38.5" width="190" height="223" rx="10" fill="#ffffff"/>
+  </g>
+  <g stroke="#8fa9c6" stroke-width="5" stroke-linecap="round">
+    <path d="M96 92h122"/>
+    <path d="M96 112h122"/>
+    <path d="M96 132h96"/>
+    <path d="M96 176h122"/>
+    <path d="M96 196h74"/>
+    <path d="M96 216h104"/>
+  </g>
+  <path d="M118 150h62" stroke="#c3d2e2" stroke-width="5" stroke-linecap="round"/>
+  <path d="M116 236h58" stroke="#c3d2e2" stroke-width="5" stroke-linecap="round"/>
+  <g stroke="#2f6fa8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M288 150h62"/>
+    <path d="M336 136l18 14-18 14"/>
+  </g>
+  <g stroke="#4a76a8" stroke-width="6" stroke-linecap="round">
+    <path d="M418 76h124"/>
+    <path d="M418 96h124"/>
+    <path d="M418 116h92"/>
+    <path d="M418 160h124"/>
+    <path d="M418 180h124"/>
+    <path d="M418 200h68"/>
+  </g>
+  <circle cx="528" cy="222" r="24" fill="#2f6fa8"/>
+  <g stroke="#ffffff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M528 208v20"/>
+    <path d="M518 220l10 10 10-10"/>
+  </g>
+</svg>

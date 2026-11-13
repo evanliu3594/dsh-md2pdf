@@ -1,0 +1,83 @@
+{
+  "name": "dsh-md2pdf",
+  "version": "0.1.0",
+  "description": "Export a Markdown file opened in the sidebar to a PDF beside it, with a settings page for the printed-page stylesheet.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "src",
+    "cordis.patch.yml",
+    "locale",
+    "docs",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node scripts/render-check.mjs && node scripts/presets-check.mjs && node scripts/preview-check.mjs && node scripts/printer-check.mjs",
+    "test:audit": "node scripts/list-audit.mjs",
+    "diagnose": "node scripts/diagnose-lists.mjs",
+    "export": "node scripts/export-cli.mjs"
+  },
+  "dependencies": {
+    "temml": "^0.14.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=20.11"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/evanliu3594/dsh-md2pdf.git"
+  },
+  "homepage": "https://github.com/evanliu3594/dsh-md2pdf#readme",
+  "bugs": {
+    "url": "https://github.com/evanliu3594/dsh-md2pdf/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "markdown",
+    "pdf",
+    "export",
+    "print",
+    "sidebar"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-context-menu",
+        "@deepseek-ai/dsh-client-ui-sidebar-documentpreview",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  }
+}

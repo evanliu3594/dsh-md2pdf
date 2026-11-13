@@ -1,0 +1,16 @@
+# Runtime and development artifacts
+node_modules/
+.npm-cache/
+.debug/
+.verify/
+.sim/
+.mock/
+.npm/
+*.log
+
+# Exported PDFs beside a document
+/README.pdf
+/samples/sample.pdf
+
+# Local engineering notes: design, plan, session ledger
+/specs/
