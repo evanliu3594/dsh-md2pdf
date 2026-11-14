@@ -316,3 +316,43 @@ macOS PASS / FAIL: ____________________
 Windows PASS / FAIL: ____________________
 Both platforms pass: YES / NO
 S1 run date and operator: ____________________
+
+## Result — 2026-11-14
+
+S1 PASS with one accepted exception.
+
+### Windows
+
+- DSH export (gongwen): 4 pages, A4 594.96 x 841.92 pt, 332,192 bytes.
+- Creator Chromium; Producer Skia/PDF m152. Edge path reports m157.
+- Fonts: FangSong, KaiTi, STZhongsong, SimHei, Times New Roman; Type3 count 5.
+- Toast reported DSH built-in; right sidebar opened the PDF.
+- file-busy: verified with an exclusive handle; `PdfError` code `file-busy`, old bytes and mtime unchanged, no staging file.
+- No new Edge/Chrome child: 33 browser processes before and after, no new PID.
+- Margins: left 28.04 mm, right 25.74 mm, top text 37.97 mm. Bottom 35 mm is the declared @page value; the sample's last page does not fill the text area, so it was not measured from text.
+- Edge browser export (gongwen): 4 pages, A4, 357,565 bytes; Creator HeadlessChrome/157; Producer m157. Text boxes match the DSH export on pages 1, 2 and 4. Page 3 differs by 0.78 pt (0.28 mm). DSH adds Noto Sans SC; Type3 4 -> 5.
+- npm test: 442/442 (Windows export check reports 75; two filesystem checks differ from macOS). One first run failed two export-check deadline assertions; two standalone reruns and a full rerun passed. Recorded as a test flake for Task 10.
+- Harness defects: `$PSScriptRoot` empty in param defaults; PS 5.1 NativeCommandError on git stderr. Recorded for Task 10; explicit `-Bundle/-Repo` and pwsh 7 completed the run.
+
+### macOS
+
+- DSH export (gongwen): 4 pages, A4, 646,100 bytes.
+- Creator Chromium; Producer Skia/PDF m152.
+- Fonts: STFangsong, STKaiti, STSongti-SC-Bold, PingFang SC, Times New Roman, Courier, Lucida Grande, STIX Two Math; Type3 count 4.
+- Left margin 28.04 mm; right margin 25.74 mm.
+- Right sidebar opened the PDF; export reported the DSH engine.
+- Accepted exception: pages 1, 2 and 4 start at 32.68, 33.19 and 34.24 mm instead of 37 mm. The cause is the Mac `STFangsong` Type3 glyph box; `STSongti-SC-Regular` and the Times fallback start at 37.94-38.20 mm. The user accepted the 3.8 mm deviation on 2026-11-14.
+- Bottom 35 mm is the declared @page value; the sample's last page does not fill the text area, so it was not measured from text.
+- The Mac file-busy path was not run separately; the Windows run exercises the same Host code path.
+
+### Test flake and harness follow-ups
+
+- Task 10 will make the export-check deadline assertions poll for the expired state instead of relying on a 150 ms timer.
+- Task 10 will fix `run-windows-s1.ps1` `$PSScriptRoot` defaults and PS 5.1 stderr handling.
+- Task 7 will make `md2pdf_export` use the DSH printer through the agent broker. The current tool stays on the browser path.
+
+### Cleanup
+
+- Temporary presets removed; `presets.json` restored to lark/gongwen/paper and selected gongwen.
+- Probe sources and PDFs removed.
+- Windows bundle, harness, and report removed.
