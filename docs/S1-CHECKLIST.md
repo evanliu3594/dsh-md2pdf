@@ -6,19 +6,21 @@ implementation session does not install, link, or restart DSH.
 
 Branch under test: `v2-dsh-printing`
 Commit under test: ____________________
-Plugin repository path used for the link: ____________________
+Plugin repository path used for the link:
+/Users/liu/Desktop/gitdir/dsh-md2pdf/.agents/worktrees/v2-dsh-printing
 DSH Desktop version: ____________________
 
-The Task 4 commit lives on branch `v2-dsh-printing`. Before the macOS run,
-either check that commit out at `/Users/liu/Desktop/gitdir/dsh-md2pdf`, or use
-the worktree path
-`/Users/liu/Desktop/gitdir/dsh-md2pdf/.agents/worktrees/v2-dsh-printing` as the
-link target. Write the path actually used in the metadata line above.
+The Task 4 commit lives on branch `v2-dsh-printing` in the worktree
+`/Users/liu/Desktop/gitdir/dsh-md2pdf/.agents/worktrees/v2-dsh-printing`.
+Every macOS path and command below uses that worktree. Do not use the parent
+checkout of this repository: it is on `main`, so the link would load the wrong
+code. If the link path resolves to a different form, such as a symlinked path,
+record the resolved path in the metadata line above.
 
 ## Shared preconditions
 
-- The repository at the link path is checked out at the commit above. A Git
-  worktree of the same repository is acceptable.
+- The checkout recorded in the platform metadata line is a Git worktree of this
+  repository, checked out at the commit above.
 - The plugin is linked into the DSH Desktop profile; the profile package manager
   resolved the link without an install error.
 - The gongwen preset (`红头公文`, id `gongwen`) is selected for the export.
@@ -36,7 +38,7 @@ Poppler available: ____________________ (`pdfinfo -v`)
 
    ```json
    "dependencies": {
-     "dsh-md2pdf": "link:/Users/liu/Desktop/gitdir/dsh-md2pdf"
+     "dsh-md2pdf": "link:/Users/liu/Desktop/gitdir/dsh-md2pdf/.agents/worktrees/v2-dsh-printing"
    }
    ```
 
@@ -52,8 +54,8 @@ Poppler available: ____________________ (`pdfinfo -v`)
 
 3. Quit DSH Desktop completely, then reopen it.
 
-Expected: the install exits 0, `node_modules/dsh-md2pdf` resolves to the repository
-path, and the plugin row loads without a client error.
+Expected: the install exits 0, `node_modules/dsh-md2pdf` resolves to the
+worktree path above, and the plugin row loads without a client error.
 
 Result: ______________________________________________
 
@@ -80,15 +82,15 @@ Result: ______________________________________________
 1. Remove any old output so creation is observable:
 
    ```bash
-   rm -f /Users/liu/Desktop/gitdir/dsh-md2pdf/samples/sample.pdf
+   rm -f /Users/liu/Desktop/gitdir/dsh-md2pdf/.agents/worktrees/v2-dsh-printing/samples/sample.pdf
    ```
 
 2. In DSH, select the gongwen preset in Settings → dsh-md2pdf.
-3. Open `samples/sample.md` in the sidebar.
+3. Open `/Users/liu/Desktop/gitdir/dsh-md2pdf/.agents/worktrees/v2-dsh-printing/samples/sample.md` in the sidebar.
 4. Run Export to PDF from the file context menu or the tab toolbar.
 
 Expected: the toast reports `engine: DSH` and names
-`/Users/liu/Desktop/gitdir/dsh-md2pdf/samples/sample.pdf`.
+`/Users/liu/Desktop/gitdir/dsh-md2pdf/.agents/worktrees/v2-dsh-printing/samples/sample.pdf`.
 
 Result: ______________________________________________
 
@@ -97,8 +99,8 @@ Result: ______________________________________________
 Run:
 
 ```bash
-pdfinfo /Users/liu/Desktop/gitdir/dsh-md2pdf/samples/sample.pdf
-pdffonts /Users/liu/Desktop/gitdir/dsh-md2pdf/samples/sample.pdf
+pdfinfo /Users/liu/Desktop/gitdir/dsh-md2pdf/.agents/worktrees/v2-dsh-printing/samples/sample.pdf
+pdffonts /Users/liu/Desktop/gitdir/dsh-md2pdf/.agents/worktrees/v2-dsh-printing/samples/sample.pdf
 ```
 
 Check, in order:
@@ -141,6 +143,10 @@ Platform: Windows ____________________ (`winver`)
 Plugin repository path used for the link: ____________________
 Node used by the profile: ____________________ (`node --version`)
 Poppler available: ____________________ (`pdfinfo -v`; write `not installed` if absent)
+
+Use a Windows checkout of branch `v2-dsh-printing`. Every path and command in
+this section uses that Windows checkout and its own Windows path; record the
+path in the metadata line above.
 
 ### Step 1: check out the branch, link the plugin, restart DSH
 
