@@ -205,7 +205,8 @@ function escape(value) {
 
 /**
  * Assemble the printable page.
- * @param input - document title, base URL, body markup, theme layer, and user CSS.
+ * @param input - document title, base URL, body markup, theme layer, user CSS,
+ *   and the page override layer.
  * @param page - page geometry and typography.
  * @returns a complete HTML document.
  */
@@ -214,13 +215,16 @@ export function buildHtml(input, page = DEFAULT_PAGE) {
   const frontmatter = input.frontmatter === '' || input.frontmatter === undefined
     ? ''
     : `<p class="frontmatter-caption">Front matter</p>${input.frontmatter}`
-  // Three layers, later winning: the structural sheet, the selected preset, and
-  // the user's own rules. Equal specificity therefore favours the user.
+  // Four layers, later winning: the structural sheet, the selected preset, the
+  // user's own rules, and finally the explicit page override for this export.
   const theme = typeof input.themeCss === 'string' && input.themeCss.trim() !== ''
     ? `<style id="md2pdf-theme">\n${safeCss(input.themeCss)}\n</style>`
     : ''
   const custom = typeof input.customCss === 'string' && input.customCss.trim() !== ''
     ? `<style id="md2pdf-custom">\n${safeCss(input.customCss)}\n</style>`
+    : ''
+  const pageCss = typeof input.pageCss === 'string' && input.pageCss.trim() !== ''
+    ? `<style id="md2pdf-page">\n${safeCss(input.pageCss)}\n</style>`
     : ''
   return `<!doctype html>
 <html lang="${escape(input.lang ?? 'zh-CN')}">
@@ -235,6 +239,7 @@ ${stylesheet(page)}
 </style>
 ${theme}
 ${custom}
+${pageCss}
 </head>
 <body>
 <main>

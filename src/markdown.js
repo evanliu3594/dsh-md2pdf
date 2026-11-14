@@ -128,6 +128,10 @@ export function splitFrontmatter(source) {
 
 /**
  * Render frontmatter as a two-column field list.
+ *
+ * Flat `pdf.*` keys configure the export rather than describe the document, so
+ * they stay out of the visible field table. Ordinary keys such as `title`,
+ * `author`, `date` and `tags` still render.
  * @param source - YAML between the fences, or null.
  * @returns the block markup, empty when the block has no fields.
  */
@@ -140,7 +144,7 @@ export function renderFrontmatter(source) {
     if (separator <= 0) continue
     const key = raw.slice(0, separator).trim()
     const value = raw.slice(separator + 1).trim().replace(/^['"]|['"]$/g, '')
-    if (key === '') continue
+    if (key === '' || key.startsWith('pdf.')) continue
     rows.push(`<tr><th>${escapeHtml(key)}</th><td>${escapeHtml(value)}</td></tr>`)
   }
   if (rows.length === 0) return ''

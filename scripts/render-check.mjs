@@ -4,7 +4,7 @@
  */
 import { buildHtml, DEFAULT_PAGE } from '../src/document.js'
 import { renderFrontmatter, renderMarkdown, splitFrontmatter } from '../src/markdown.js'
-import { sanitizeFragment } from '../src/html-build.js'
+import { renderDocument, sanitizeFragment } from '../src/html-build.js'
 import { DEFAULT_THEME, THEMES, resolveTheme, themeCss } from '../src/themes.js'
 
 let failures = 0
@@ -129,6 +129,13 @@ expectEqual('frontmatter body', frontmatter.body, 'body')
 expectContains('frontmatter row', renderFrontmatter(frontmatter.frontmatter), '<th>title</th><td>示例</td>')
 expectEqual('unterminated frontmatter stays body', splitFrontmatter('---\ntitle: x').frontmatter, null)
 
+// Flat pdf.* keys configure the export and stay out of the visible field table.
+const configFrontmatter = splitFrontmatter('---\ntitle: 示例\npdf.header: 内部资料\npdf.page.size: A3\n---\nbody')
+const configBlock = renderFrontmatter(configFrontmatter.frontmatter)
+expectContains('frontmatter keeps ordinary fields', configBlock, '<th>title</th><td>示例</td>')
+expectMissing('frontmatter hides pdf keys', configBlock, 'pdf.header')
+expectMissing('frontmatter hides pdf values', configBlock, '内部资料')
+
 const page = buildHtml({ title: 'T', body: '<p>x</p>' }, DEFAULT_PAGE)
 expectContains('page doctype', page, '<!doctype html>')
 expectContains('page margin', page, 'margin: 18mm;')
@@ -145,6 +152,22 @@ expectEqual('custom css follows builtin sheet',
 expectContains('custom css escapes closing tag',
   buildHtml({ title: 'T', body: '', customCss: 'a{}</style><b>' }, DEFAULT_PAGE), '<\\/style>')
 expectMissing('no custom css block when empty', buildHtml({ title: 'T', body: '' }, DEFAULT_PAGE), 'md2pdf-custom')
+
+// The explicit page override is the last stylesheet layer and cannot break out.
+const pageCss = 'body{font-size:12px}'
+const pageOverride = buildHtml({
+  title: 'T', body: '', themeCss: 'body{color:blue}', customCss: 'body{color:red}', pageCss,
+}, DEFAULT_PAGE)
+expectContains('page override block', pageOverride, '<style id="md2pdf-page">')
+expectContains('page override content', pageOverride, pageCss)
+expectEqual('page override follows preset css',
+  pageOverride.indexOf('color:blue') < pageOverride.indexOf(pageCss), true)
+expectEqual('page override follows user css',
+  pageOverride.indexOf('color:red') < pageOverride.indexOf(pageCss), true)
+expectContains('page override escapes closing tag',
+  buildHtml({ title: 'T', body: '', pageCss: 'a{}</style><b>' }, DEFAULT_PAGE), '<\\/style>')
+expectMissing('no page override block when empty',
+  buildHtml({ title: 'T', body: '' }, DEFAULT_PAGE), 'md2pdf-page')
 
 // Presets: one default, three choices, and a theme layer between base and user CSS.
 expectEqual('default preset', DEFAULT_THEME, 'lark')
@@ -178,6 +201,18 @@ expectTrue('paper heading stack starts with Latin',
 const themed = buildHtml({ title: 'T', body: '', themeCss: 'body{color:blue}', customCss: 'body{color:red}' }, DEFAULT_PAGE)
 expectContains('theme style block', themed, '<style id="md2pdf-theme">')
 expectEqual('custom css follows theme', themed.indexOf('color:blue') < themed.indexOf('color:red'), true)
+
+// renderDocument carries the page override and leaves pdf.* front matter out.
+const rendered = await renderDocument({
+  markdown: '---\ntitle: 示例\npdf.header: 内部资料\n---\n# 标题',
+  title: 'T',
+  themeCss: 'body{color:blue}',
+  pageCss: 'body{font-size:12px}',
+})
+expectContains('render carries page override', rendered.html, '<style id="md2pdf-page">')
+expectEqual('render keeps page override after preset',
+  rendered.html.indexOf('color:blue') < rendered.html.indexOf('body{font-size:12px}'), true)
+expectMissing('render hides pdf keys from frontmatter', rendered.html, 'pdf.header')
 
 process.stdout.write(`\n${checks - failures}/${checks} checks passed\n`)
 process.exit(failures === 0 ? 0 : 1)

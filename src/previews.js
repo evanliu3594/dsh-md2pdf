@@ -11,7 +11,7 @@
  * generated document and applied as body padding, which is what makes the
  * printed margins visible in the miniature.
  */
-import { DEFAULT_PAGE } from './document.js'
+import { pageMarginShorthand } from './page-css.js'
 import { renderDocument } from './html-build.js'
 import { listPresets, readPreset } from './presets.js'
 
@@ -38,14 +38,13 @@ export const PREVIEW_MARKDOWN = `# 文档标题
  *
  * The base stylesheet declares a uniform margin and a preset may replace it, so
  * the last declaration in document order wins — the same cascade the print
- * engine applies.
+ * engine applies. The shared parser also supplies the default when a document
+ * carries no page margin.
  * @param html - a complete printable document.
  * @returns the margin shorthand, falling back to the default geometry.
  */
 export function pageMarginOf(html) {
-  const matches = [...html.matchAll(/@page\s*\{[^}]*?margin\s*:\s*([^;}]+)/g)]
-  const last = matches[matches.length - 1]
-  return last === undefined ? `${DEFAULT_PAGE.marginMm}mm` : last[1].trim()
+  return pageMarginShorthand(html)
 }
 
 /**

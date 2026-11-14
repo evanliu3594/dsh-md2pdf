@@ -109,7 +109,8 @@ async function pandocBody(markdown, pandoc, timeoutMs) {
  * The built-in renderer is the default: every install then produces the same
  * paper, with no dependence on a tool the machine happens to have. pandoc and
  * Temml are opt-in refinements, and their absence changes nothing else.
- * @param input - markdown text, title, base URL, page geometry, and user CSS.
+ * @param input - markdown text, title, base URL, page geometry, page override
+ *   CSS, and user CSS.
  * @param options - renderer choice and pandoc discovery overrides.
  * @returns the HTML document, the generator that produced its body, and the
  *   typesetter used for TeX.
@@ -152,6 +153,7 @@ export async function renderDocument(input, options = {}) {
       body: bodyHtml,
       themeCss: input.themeCss,
       customCss: input.customCss,
+      pageCss: input.pageCss,
     }, page),
   }
 }
