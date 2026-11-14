@@ -148,14 +148,60 @@ Use a Windows checkout of branch `v2-dsh-printing`. Every path and command in
 this section uses that Windows checkout and its own Windows path; record the
 path in the metadata line above.
 
-### Step 1: check out the branch, link the plugin, restart DSH
+### Step 0: transfer the branch without pushing
 
-1. Check out the same commit in a Windows repository directory, for example:
+The Mac side has a complete Git bundle of branch `v2-dsh-printing` at
+`/tmp/dsh-md2pdf-v2.bundle`. It contains the full history, so Windows can clone
+or fetch it without GitHub and without a push.
+
+1. From Windows, copy the bundle over SSH. Use the Mac's LAN address; this Mac
+   currently reports `10.20.37.130` on `en0` and `AppleCube.local` via mDNS.
+   The SSH user is `liu`.
 
    ```bat
-   git -C C:\work\dsh-md2pdf fetch --all
+   scp liu@10.20.37.130:/tmp/dsh-md2pdf-v2.bundle C:\work\
+   ```
+
+2. Verify the copy. On the Mac run:
+
+   ```bash
+   shasum -a 256 /tmp/dsh-md2pdf-v2.bundle
+   ```
+
+   On Windows run:
+
+   ```bat
+   certutil -hashfile C:\work\dsh-md2pdf-v2.bundle SHA256
+   ```
+
+   Record both values. They must match before installing anything.
+
+3. Clone the bundle into the Windows checkout used by the profile:
+
+   ```bat
+   git clone -b v2-dsh-printing C:\work\dsh-md2pdf-v2.bundle C:\work\dsh-md2pdf-task4
+   ```
+
+   If a Windows repository already has the branch, fetch the bundle instead:
+
+   ```bat
+   git -C C:\work\dsh-md2pdf fetch C:\work\dsh-md2pdf-v2.bundle v2-dsh-printing
    git -C C:\work\dsh-md2pdf worktree add C:\work\dsh-md2pdf-task4 v2-dsh-printing
    ```
+
+4. Install the plugin's own runtime dependency (`temml`) in that checkout:
+
+   ```bat
+   cd /d C:\work\dsh-md2pdf-task4
+   npm install --no-audit --no-fund
+   ```
+
+Result: ______________________________________________
+
+### Step 1: link the plugin and restart DSH
+
+1. Confirm the Windows checkout in `C:\work\dsh-md2pdf-task4` is on
+   `v2-dsh-printing` at the commit under test.
 
 2. Edit `%USERPROFILE%\.dsh\profiles\desktop\package.json` and use the Windows
    path of that checkout:
