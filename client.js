@@ -19,10 +19,30 @@ window.__ModuleLoader__.load({
 
     /** Routes the Host registers; the browser addresses them relatively. */
     const EXPORT_ROUTE = 'md2pdf/export'
+    const PREPARE_ROUTE = 'md2pdf/prepare'
+    const FINISH_ROUTE = 'md2pdf/finish'
     const CAPABILITY_ROUTE = 'md2pdf/capability'
     const SETTINGS_ROUTE = 'md2pdf/settings'
     const PRESETS_ROUTE = 'md2pdf/presets'
     const PREVIEWS_ROUTE = 'md2pdf/previews'
+
+    /** The print guest must attach and become ready before this deadline. */
+    const PRINT_ATTACH_TIMEOUT_MS = 20000
+    /** A slow loopback page may not take longer than this to finish loading. */
+    const PRINT_LOAD_TIMEOUT_MS = 60000
+    /** Bounds the whole guest-side print and the finish request. */
+    const PRINT_RUN_TIMEOUT_MS = 120000
+    /** Images may not hold the print past this; a failed decode never blocks. */
+    const IMAGE_DECODE_TIMEOUT_MS = 3000
+
+    /** Failure codes for which `auto` may retry through the browser fallback. */
+    const FALLBACK_CODES = new Set([
+      'client-required',
+      'no-printer',
+      'print-failed',
+      'job-timeout',
+      'asset-server-failed',
+    ])
 
     /** A4 at 96 dpi: the width every preview is laid out at before scaling. */
     const PAGE_WIDTH = 794
@@ -59,11 +79,18 @@ window.__ModuleLoader__.load({
         'tool.export': 'Export to PDF',
         'tool.busy': 'Exporting to PDF…',
         'tool.failed': 'Export failed',
-        'toast.ok': 'PDF written to {path}',
+        'toast.ok': 'PDF written to {path} (engine: {engine})',
+        'toast.warnings': 'warnings: {message}',
         'toast.failed': 'PDF export failed: {message}',
+        'engine.dsh': 'DSH',
         'settings.label': 'dsh-md2pdf',
         'settings.heading': 'Printed page styles',
         'settings.hint': 'A preset is one stylesheet. Click a card to use it, edit it below, or add your own. A change applies to the next export with no restart.',
+        'settings.engine': 'Print engine: {engine}',
+        'settings.engineChecking': 'checking…',
+        'settings.engineDsh': 'DSH built-in',
+        'settings.engineBrowser': '{name} (browser fallback)',
+        'settings.engineNone': 'none',
         'settings.presetLabel': 'Presets',
         'settings.selected': 'In use: {name}',
         'settings.editing': 'Editing: {name}',
@@ -119,11 +146,18 @@ window.__ModuleLoader__.load({
         'tool.export': '导出为 PDF',
         'tool.busy': '正在导出 PDF…',
         'tool.failed': '导出失败',
-        'toast.ok': 'PDF 已输出到 {path}',
+        'toast.ok': 'PDF 已输出到 {path}（引擎：{engine}）',
+        'toast.warnings': '警告：{message}',
         'toast.failed': '导出 PDF 失败：{message}',
+        'engine.dsh': 'DSH 内置',
         'settings.label': 'dsh-md2pdf',
         'settings.heading': '打印样式',
         'settings.hint': '一个预设就是一份样式表。点卡片应用到导出，点「编辑」改它的样式，也能新建、排序、删除。改动在下次导出生效，不需要重启。',
+        'settings.engine': '打印引擎：{engine}',
+        'settings.engineChecking': '检查中…',
+        'settings.engineDsh': 'DSH 内置',
+        'settings.engineBrowser': '{name}（浏览器回退）',
+        'settings.engineNone': '无',
         'settings.presetLabel': '版式预设',
         'settings.selected': '当前使用：{name}',
         'settings.editing': '正在编辑：{name}',
@@ -233,21 +267,404 @@ window.__ModuleLoader__.load({
 
     /** Read the Host's printer capability once per page. */
     let capability = null
+    /** The resolved capability, so the synchronous engine status can read it. */
+    let capabilityValue = null
     function loadCapability() {
       capability ??= requestRoute(CAPABILITY_ROUTE, { headers: { accept: 'application/json' } })
-        .then(({ payload }) => payload ?? { engine: null })
-        .catch(() => ({ engine: null }))
+        .then(({ payload }) => {
+          capabilityValue = payload ?? { engine: null }
+          return capabilityValue
+        })
+        .catch(() => {
+          capabilityValue = { engine: null }
+          return capabilityValue
+        })
       return capability
     }
 
     /**
-     * Run one export through the Host.
+     * Short name of the browser the Host would use for the fallback.
+     * @param path - executable path resolved by the Host, or null.
+     * @returns a label safe for the settings page.
+     */
+    function browserEngineName(path) {
+      const name = typeof path === 'string' ? path.split(/[\\/]/).pop() ?? '' : ''
+      if (/edge/i.test(name)) return 'Edge'
+      if (/chrome/i.test(name)) return 'Chrome'
+      if (/chromium/i.test(name)) return 'Chromium'
+      if (/brave/i.test(name)) return 'Brave'
+      return 'browser'
+    }
+
+    /**
+     * Read the configured print engine. An unknown or absent value means auto.
+     * @param ready - the capability answer, or null.
+     * @returns `dsh`, `browser`, or `auto`.
+     */
+    function printEngineOf(ready) {
+      const value = ready !== null && typeof ready === 'object' ? ready.printEngine : undefined
+      return value === 'dsh' || value === 'browser' ? value : 'auto'
+    }
+
+    /**
+     * Build one failure carrying a Host-style code.
+     * @param code - stable machine code.
+     * @param message - operator-facing explanation.
+     * @returns the failure to throw.
+     */
+    function namedError(code, message) {
+      const error = new Error(message)
+      error.code = code
+      return error
+    }
+
+    /**
+     * Treat an unexpected rejection as a print failure, keeping a code the
+     * fallback policy already understands.
+     * @param error - the rejected value.
+     * @param message - context for the failure.
+     * @returns a coded failure.
+     */
+    function asPrintFailure(error, message) {
+      if (error !== null && typeof error === 'object' && typeof error.code === 'string') return error
+      return namedError('print-failed', `${message}: ${messageOf(error)}`)
+    }
+
+    /**
+     * Bound one promise so a lost guest cannot stall the print queue.
+     * @param task - work to bound.
+     * @param ms - deadline.
+     * @param message - text when the deadline passes.
+     * @returns the task's value.
+     */
+    async function withinTimeout(task, ms, message) {
+      let timer
+      const deadline = new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(namedError('print-failed', message)), ms)
+      })
+      try {
+        return await Promise.race([task, deadline])
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+
+    /**
+     * Wait for one webview lifecycle event before a deadline.
+     * @param element - the attached webview.
+     * @param name - event name.
+     * @param timeoutMs - deadline for the event.
+     * @param message - text when the event never arrives.
+     * @param watchFailures - also stop on a main-frame load failure.
+     * @returns after the event fires.
+     */
+    function waitForWebviewEvent(element, name, timeoutMs, message, watchFailures) {
+      return new Promise((resolve, reject) => {
+        let timer
+        const cleanup = () => {
+          clearTimeout(timer)
+          element.removeEventListener(name, onEvent)
+          element.removeEventListener('did-fail-load', onFail)
+          element.removeEventListener('render-process-gone', onGone)
+        }
+        const fail = (error) => {
+          cleanup()
+          reject(error)
+        }
+        const onEvent = () => {
+          cleanup()
+          resolve()
+        }
+        const onFail = (event) => {
+          if (event !== null && typeof event === 'object' && event.isMainFrame === false) return
+          if (event !== null && typeof event === 'object' && event.errorCode === -3) return
+          const explanation = event !== null && typeof event === 'object' && typeof event.errorDescription === 'string'
+            ? event.errorDescription
+            : 'load failed'
+          fail(namedError('print-failed', `${message}: ${explanation}`))
+        }
+        const onGone = () => {
+          fail(namedError('print-failed', `${message}: the print guest went away`))
+        }
+        timer = setTimeout(() => { fail(namedError('print-failed', message)) }, timeoutMs)
+        element.addEventListener(name, onEvent)
+        if (watchFailures === true) {
+          element.addEventListener('did-fail-load', onFail)
+          element.addEventListener('render-process-gone', onGone)
+        }
+      })
+    }
+
+    /**
+     * Page script run inside the guest before printing. It waits for fonts and
+     * for every image decode, but a failed decode never blocks and the whole
+     * image wait is capped.
+     */
+    const RESOURCE_WAIT_SCRIPT = `(async () => {
+  try {
+    if (document.fonts && document.fonts.ready) await document.fonts.ready
+  } catch {}
+  const images = Array.from(document.images || [])
+  const decoded = images.map(image => image.decode().then(() => true, () => false))
+  await Promise.race([
+    Promise.all(decoded),
+    new Promise(resolve => setTimeout(resolve, ${IMAGE_DECODE_TIMEOUT_MS})),
+  ])
+  return true
+})()`
+
+    /**
+     * Commit bytes through the Host's finish route. A transport failure is
+     * retried once with the same token; the Host answers a replay idempotently.
+     * @param finishToken - the job's write credential.
+     * @param pdfBytes - bytes returned by `printToPDF`.
+     * @returns the Host's finish result.
+     */
+    async function finishPrintedPdf(finishToken, pdfBytes) {
+      let transportError = null
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        let answer
+        try {
+          answer = await requestRoute(FINISH_ROUTE, {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/pdf',
+              'x-md2pdf-token': finishToken,
+            },
+            body: pdfBytes,
+          })
+        } catch (error) {
+          transportError = error
+          continue
+        }
+        const { response, payload } = answer
+        if (response.ok && payload !== null && payload.ok === true) return payload
+        const code = payload !== null && typeof payload.code === 'string' ? payload.code : 'print-failed'
+        const message = payload !== null && typeof payload.message === 'string'
+          ? payload.message
+          : `HTTP ${response.status}`
+        throw namedError(code, message)
+      }
+      throw namedError('print-failed', `the printed PDF could not be committed: ${messageOf(transportError)}`)
+    }
+
+    /**
+     * Create one detached print guest for an approved lease.
+     *
+     * The main process accepts the webview only when `src` is
+     * `about:blank#<lease>`, the partition equals the lease partition, and the
+     * lease has not been attached before. `name` is the guest's stable handle.
+     * @param reservation - the bridge's lease and partition.
+     * @returns a configured but unattached webview.
+     */
+    function createPrintWebview(reservation) {
+      const element = document.createElement('webview')
+      element.setAttribute('name', reservation.lease)
+      element.setAttribute('partition', reservation.partition)
+      element.setAttribute('src', `about:blank#${reservation.lease}`)
+      element.style.display = 'block'
+      element.style.width = `${PAGE_WIDTH}px`
+      element.style.height = `${PAGE_HEIGHT}px`
+      element.style.border = '0'
+      element.style.background = '#fff'
+      return element
+    }
+
+    /**
+     * The Desktop browser bridge, or null outside the DSH main frame.
+     * @returns the bridge that issues guest leases.
+     */
+    function dshBrowserBridge() {
+      if (typeof window === 'undefined') return null
+      try {
+        if (window.top !== window.self) return null
+      } catch {
+        return null
+      }
+      const desktop = window.dshDesktop
+      if (desktop === null || typeof desktop !== 'object') return null
+      if (typeof desktop.protocolVersion !== 'number' || desktop.protocolVersion < 1) return null
+      const bridge = desktop.browser
+      if (bridge === null || typeof bridge !== 'object') return null
+      if (typeof bridge.acquire !== 'function' || typeof bridge.release !== 'function') return null
+      return bridge
+    }
+
+    /**
+     * Whether this window can host a DSH print guest.
+     *
+     * The Web GUI and every non-app frame fail this check; the attached
+     * element's own `printToPDF` is checked again immediately before printing.
+     * @returns whether the DSH printer can be used here.
+     */
+    function dshPrinterAvailable() {
+      if (dshBrowserBridge() === null) return false
+      try {
+        const probe = document.createElement('webview')
+        // Electron installs the WebView API on the element prototype when the
+        // window enables `webviewTag`; a bare HTMLElement has no such method.
+        return typeof probe.printToPDF === 'function'
+      } catch {
+        return false
+      }
+    }
+
+    /**
+     * Engine the UI should report, honoring the configured preference.
+     *
+     * The capability is cached by {@link loadCapability}; callers that need the
+     * first answer wait for that load and then read this synchronous status.
+     * @returns `dsh`, `browser`, or `none`.
+     */
+    function printEngineStatus() {
+      const ready = capabilityValue
+      const configured = printEngineOf(ready)
+      const browser = ready !== null && ready.engine !== null && ready.engine !== undefined
+      const dsh = dshPrinterAvailable()
+      if (configured === 'dsh') return dsh ? 'dsh' : 'none'
+      if (configured === 'browser') return browser ? 'browser' : 'none'
+      if (dsh) return 'dsh'
+      return browser ? 'browser' : 'none'
+    }
+
+    /**
+     * Whether the configured engine has a usable printer for an export.
+     * @param ready - the capability answer, or null.
+     * @returns whether the export action can run.
+     */
+    function exportAvailable(ready) {
+      const configured = printEngineOf(ready)
+      const browser = ready !== null && ready.engine !== null && ready.engine !== undefined
+      if (configured === 'browser') return browser
+      if (configured === 'dsh') return dshPrinterAvailable()
+      return dshPrinterAvailable() || browser
+    }
+
+    /** The mounted PrintHost container; only the persistent slot sets it. */
+    let printHostContainer = null
+
+    /** One client print at a time; queued callers keep their order. */
+    let printTail = Promise.resolve()
+
+    /**
+     * Queue one guest print behind every earlier print.
+     * @param task - work to run when the queue reaches it.
+     * @returns the task's result.
+     */
+    function enqueuePrint(task) {
+      const next = printTail.then(task, task)
+      printTail = next.then(() => undefined, () => undefined)
+      return next
+    }
+
+    /**
+     * Print one prepared job through the DSH guest and commit its bytes.
+     * @param job - print URL, finish token, print options, and Session id.
+     * @returns the Host's finish result.
+     */
+    function runPrintJob(job) {
+      return enqueuePrint(async () => {
+        const container = printHostContainer
+        if (container === null || !container.isConnected) {
+          throw namedError('client-required', 'the DSH print host is not mounted')
+        }
+        const bridge = dshBrowserBridge()
+        if (bridge === null) throw namedError('client-required', 'this window has no DSH browser lease')
+        let reservation
+        try {
+          reservation = await bridge.acquire(`md2pdf:${job.sessionId ?? 'ui'}`)
+        } catch (error) {
+          throw asPrintFailure(error, 'could not lease a print guest')
+        }
+        let element = null
+        try {
+          element = createPrintWebview(reservation)
+          const ready = waitForWebviewEvent(
+            element, 'dom-ready', PRINT_ATTACH_TIMEOUT_MS, 'the print guest did not become ready', true,
+          )
+          try {
+            container.append(element)
+          } catch (error) {
+            ready.catch(() => {})
+            throw asPrintFailure(error, 'the print guest could not be attached')
+          }
+          await ready
+          if (typeof element.loadURL !== 'function'
+            || typeof element.executeJavaScript !== 'function'
+            || typeof element.printToPDF !== 'function') {
+            throw namedError('no-printer', 'the attached DSH webview cannot print')
+          }
+          try {
+            const finished = waitForWebviewEvent(
+              element, 'did-finish-load', PRINT_LOAD_TIMEOUT_MS, 'the print page did not finish loading', true,
+            )
+            let loading
+            try {
+              loading = element.loadURL(job.printUrl)
+            } catch (error) {
+              finished.catch(() => {})
+              throw error
+            }
+            await withinTimeout(
+              Promise.all([loading, finished]),
+              PRINT_LOAD_TIMEOUT_MS,
+              'the print page did not load',
+            )
+          } catch (error) {
+            throw asPrintFailure(error, 'the print page did not load')
+          }
+          try {
+            await withinTimeout(
+              element.executeJavaScript(RESOURCE_WAIT_SCRIPT),
+              PRINT_RUN_TIMEOUT_MS,
+              'the print page did not settle its fonts and images',
+            )
+          } catch (error) {
+            throw asPrintFailure(error, 'the print page did not settle')
+          }
+          let pdfBytes
+          try {
+            pdfBytes = await withinTimeout(
+              element.printToPDF(job.printOptions),
+              PRINT_RUN_TIMEOUT_MS,
+              'the print guest did not return a PDF',
+            )
+          } catch (error) {
+            throw asPrintFailure(error, 'the print guest did not return a PDF')
+          }
+          if (!(pdfBytes instanceof Uint8Array) || pdfBytes.byteLength === 0) {
+            throw namedError('print-failed', 'the print guest returned no bytes')
+          }
+          try {
+            return await withinTimeout(
+              finishPrintedPdf(job.finishToken, pdfBytes),
+              PRINT_RUN_TIMEOUT_MS,
+              'the printed PDF was not committed',
+            )
+          } catch (error) {
+            throw asPrintFailure(error, 'the printed PDF was not committed')
+          }
+        } finally {
+          if (element !== null) element.remove()
+          try {
+            await bridge.release(reservation.lease)
+          } catch {
+            // The guest is destroyed with the element; a failed release must not
+            // replace the print failure the caller needs to see.
+          }
+        }
+      })
+    }
+
+    /**
+     * Run one export through the Host's browser fallback.
      * @param input - source path and the Session that reported it.
      * @returns the Host's answer, or a named failure.
      */
     async function exportPdf(input) {
       const body = { path: input.path }
       if (typeof input.sessionId === 'string' && input.sessionId !== '') body.sessionId = input.sessionId
+      if (input.page !== undefined) body.page = input.page
       const { response, payload } = await requestRoute(EXPORT_ROUTE, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -257,7 +674,7 @@ window.__ModuleLoader__.load({
       const message = payload !== null && typeof payload.message === 'string'
         ? payload.message
         : `HTTP ${response.status}`
-      return { ok: false, message }
+      return { ok: false, code: payload !== null ? payload.code : undefined, message }
     }
 
     /** Styles shared by the toolbar control and the settings page. */
@@ -288,6 +705,17 @@ window.__ModuleLoader__.load({
 
 .md2pdf-section { display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 560px; min-width: 0; box-sizing: border-box; }
 .md2pdf-section * { box-sizing: border-box; }
+.md2pdf-print-host {
+  position: fixed;
+  top: 0;
+  left: -10000px;
+  width: 794px;
+  height: 1123px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 0;
+}
 .md2pdf-heading { margin: 0; font-size: 14px; font-weight: 600; color: var(--dsw-alias-label-primary, #1c1f23); }
 .md2pdf-hint { margin: 0; font-size: 12px; line-height: 1.65; color: var(--dsw-alias-label-secondary, #6b7280); }
 .md2pdf-cards { display: flex; flex-wrap: wrap; gap: 10px; }
@@ -670,8 +1098,36 @@ window.__ModuleLoader__.load({
       }))
     }
 
+    /**
+     * The persistent print surface.
+     *
+     * The guest is created imperatively for one job and removed with it; this
+     * component owns only the laid-out container the guest attaches to. It
+     * stays offscreen with `opacity: 0` so the page keeps a real A4 box tree
+     * instead of a `display: none` box that would not lay out.
+     */
+    function PrintHost() {
+      const hostRef = React.useRef(null)
+      React.useEffect(() => {
+        const container = hostRef.current
+        if (container === null) return undefined
+        printHostContainer = container
+        return () => {
+          if (printHostContainer === container) printHostContainer = null
+        }
+      }, [])
+      return h(React.Fragment, null,
+        h(Styles, null),
+        h('div', {
+          ref: hostRef,
+          className: 'md2pdf-print-host',
+          'data-md2pdf': 'print-host',
+          'aria-hidden': 'true',
+        }))
+    }
+
     return {
-      inject: ['slots', 'contextMenus', 'locale'],
+      inject: ['slots', 'contextMenus', 'locale', 'sidebarRight'],
 
       apply(ctx) {
         // One dictionary per registered language: the client locale service
@@ -709,13 +1165,112 @@ window.__ModuleLoader__.load({
         }
 
         /**
+         * Print one file through the DSH Chromium guest.
+         * @param input - source path and render overrides.
+         * @returns the Host's finish result.
+         * @throws {Error & { code?: string }} with the Host's failure code.
+         */
+        async function printWithDsh(input) {
+          if (!dshPrinterAvailable()) {
+            throw namedError('client-required', 'the DSH printer is not available in this window')
+          }
+          const body = { path: input.path }
+          if (typeof input.sessionId === 'string' && input.sessionId !== '') body.sessionId = input.sessionId
+          if (typeof input.preset === 'string' && input.preset !== '') body.preset = input.preset
+          if (input.page !== undefined) body.page = input.page
+          if (input.documentConfig !== undefined) body.documentConfig = input.documentConfig
+          let answer
+          try {
+            answer = await requestRoute(PREPARE_ROUTE, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(body),
+            })
+          } catch (error) {
+            throw asPrintFailure(error, 'the print job could not be prepared')
+          }
+          const { response, payload } = answer
+          if (!response.ok
+            || payload === null
+            || typeof payload.printUrl !== 'string'
+            || typeof payload.finishToken !== 'string') {
+            const code = payload !== null && typeof payload.code === 'string' ? payload.code : 'print-failed'
+            const message = payload !== null && typeof payload.message === 'string'
+              ? payload.message
+              : `HTTP ${response.status}`
+            throw namedError(code, message)
+          }
+          const result = await runPrintJob({
+            printUrl: payload.printUrl,
+            finishToken: payload.finishToken,
+            printOptions: payload.printOptions,
+            sessionId: input.sessionId,
+          })
+          if (typeof result.previewAddress === 'string'
+            && result.previewAddress !== ''
+            && ctx.sidebarRight !== undefined
+            && typeof ctx.sidebarRight.openResource === 'function') {
+            try {
+              ctx.sidebarRight.openResource(result.previewAddress)
+            } catch (error) {
+              // A viewer that refuses the address leaves the written PDF in
+              // place; the success toast still reports the path.
+              console.warn('md2pdf: could not open the PDF preview', error)
+            }
+          }
+          return result
+        }
+
+        /**
+         * Pick the engine the configuration allows. `auto` retries through the
+         * browser only for failures that cannot have written the target.
+         * @param input - source path and render overrides.
+         * @returns the Host's answer, or a named failure.
+         */
+        async function exportWithEngine(input) {
+          const ready = await loadCapability()
+          const configured = printEngineOf(ready)
+          if (configured === 'browser') return exportPdf(input)
+          const dsh = dshPrinterAvailable()
+          if (!dsh) {
+            if (configured === 'dsh') {
+              return {
+                ok: false,
+                code: 'client-required',
+                message: 'The DSH printer is not available in this window. Set printEngine to auto or browser to use a browser.',
+              }
+            }
+            return exportPdf(input)
+          }
+          try {
+            return { ok: true, result: await printWithDsh(input) }
+          } catch (error) {
+            const code = error !== null && typeof error === 'object' ? error.code : undefined
+            const failure = { ok: false, code, message: messageOf(error) }
+            if (configured === 'dsh' || !FALLBACK_CODES.has(code)) return failure
+            return exportPdf(input)
+          }
+        }
+
+        /**
          * Export one file and report the result.
          * @returns whether the Host wrote a PDF.
          */
         async function runExport(input) {
-          const outcome = await exportPdf(input).catch(error => ({ ok: false, message: messageOf(error) }))
+          const outcome = await exportWithEngine(input)
+            .catch(error => ({ ok: false, code: error?.code, message: messageOf(error) }))
           if (outcome.ok) {
-            notify(t('toast.ok', { path: outcome.result.pdfPath }), true)
+            const warnings = Array.isArray(outcome.result.warnings)
+              ? outcome.result.warnings.filter(warning => typeof warning === 'string' && warning !== '')
+              : []
+            const engine = outcome.result.engine === 'dsh'
+              ? t('engine.dsh')
+              : browserEngineName(outcome.result.printer)
+            let message = t('toast.ok', { path: outcome.result.pdfPath, engine })
+            if (warnings.length > 0) {
+              message += ` — ${t('toast.warnings', { message: warnings.join('; ') })}`
+            }
+            notify(message, true)
             return true
           }
           notify(t('toast.failed', { message: outcome.message }), false)
@@ -737,7 +1292,7 @@ window.__ModuleLoader__.load({
           async resolve(target) {
             if (!isMarkdownPath(target.path)) return []
             const ready = await loadCapability()
-            const available = ready !== null && ready.engine !== null && ready.engine !== undefined
+            const available = exportAvailable(ready)
             return [{
               id: 'md2pdf.export',
               label: available ? t('menu.export') : t('menu.unavailable'),
@@ -786,6 +1341,13 @@ window.__ModuleLoader__.load({
           order: 20,
         }, ExportControl)), 'md2pdf: preview control')
 
+        // The print surface lives in the always-mounted frame overlay; it must
+        // not append a webview host to document.body.
+        ctx.effect(() => ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+          name: 'shell.overlay',
+          id: 'md2pdf-print-host',
+        }, PrintHost)), 'md2pdf: print host')
+
         // Settings page: the preset library, its editor, and the dialogs that
         // confirm a save or a deletion.
         function SettingsSection() {
@@ -800,6 +1362,7 @@ window.__ModuleLoader__.load({
           const [previews, setPreviews] = React.useState({})
           const [meta, setMeta] = React.useState({ cssPath: '', presetsPath: '', maxBytes: 0 })
           const [status, setStatus] = React.useState(null)
+          const [engine, setEngine] = React.useState(null)
           const [busy, setBusy] = React.useState(false)
           const [dialog, setDialog] = React.useState(null)
 
@@ -868,6 +1431,23 @@ window.__ModuleLoader__.load({
             load()
             loadPreviews()
           }, [load, loadPreviews])
+
+          React.useEffect(() => {
+            let live = true
+            loadCapability()
+              .then(() => {
+                if (!live) return
+                const status = printEngineStatus()
+                setEngine({
+                  status,
+                  name: status === 'browser' ? browserEngineName(capabilityValue?.engine) : '',
+                })
+              })
+              .catch(() => {
+                if (live) setEngine({ status: 'none', name: '' })
+              })
+            return () => { live = false }
+          }, [])
 
           /** Run one preset action, surfacing the Host's failure code. */
           const act = React.useCallback(async (body) => {
@@ -1009,10 +1589,23 @@ window.__ModuleLoader__.load({
           const dirty = css !== savedCss
           const missingBuiltin = builtins.some(id => !presets.some(preset => preset.id === id))
           const editingLabel = editingId === null ? t('settings.editingNew') : t('settings.editing', { name })
+          const engineText = engine === null
+            ? t('settings.engineChecking')
+            : engine.status === 'dsh'
+              ? t('settings.engineDsh')
+              : engine.status === 'browser'
+                ? t('settings.engineBrowser', { name: engine.name })
+                : t('settings.engineNone')
           const rows = []
 
           rows.push(h('h3', { key: 'heading', className: 'md2pdf-heading' }, t('settings.heading')))
           rows.push(h('p', { key: 'hint', className: 'md2pdf-hint' }, t('settings.hint')))
+          rows.push(h('p', {
+            key: 'engine',
+            className: 'md2pdf-hint',
+            'data-md2pdf': 'engine',
+            'data-engine': engine === null ? 'checking' : engine.status,
+          }, t('settings.engine', { engine: engineText })))
 
           if (presets.length > 0) {
             rows.push(h('div', {
