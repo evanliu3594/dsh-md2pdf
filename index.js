@@ -18,6 +18,7 @@ import { isAbsolute } from 'node:path'
 import {
   describeCapability, exportMarkdownToPdf, finishExport, MARKDOWN_EXTENSIONS, prepareExport,
 } from './src/export.js'
+import { fontFacesInCss, fontsInCss } from './src/font-css.js'
 import { openPath } from './src/opener.js'
 import { PdfError } from './src/pdf.js'
 import {
@@ -254,6 +255,7 @@ export function apply(ctx, config) {
   const options = {
     engine: config?.engine,
     printEngine: config?.printEngine,
+    afterExport: config?.afterExport,
     browserPath: config?.browserPath,
     pandocPath: config?.pandocPath,
     renderer: config?.renderer,
@@ -274,6 +276,10 @@ export function apply(ctx, config) {
       try {
         const { selected, presets } = await listPresets()
         const current = await readPreset(selected)
+        // The Host reports which families the stylesheet asks for and which
+        // ones are declared by @font-face. Availability is a browser fact; the
+        // client checks it with document.fonts and never trusts this table for it.
+        const faces = new Set(fontFacesInCss(current.css).map(family => family.toLowerCase()))
         sendJson(res, 200, {
           selected,
           presets,
@@ -282,6 +288,10 @@ export function apply(ctx, config) {
           cssPath: presetCssPath(selected),
           presetsPath: presetsDirectory(),
           maxBytes: MAX_PRESET_CSS_BYTES,
+          fonts: fontsInCss(current.css).map(family => ({
+            family,
+            face: faces.has(family.toLowerCase()),
+          })),
         })
       } catch (error) {
         const failure = failureResponse(error)

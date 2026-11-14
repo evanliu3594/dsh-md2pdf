@@ -88,6 +88,7 @@ window.__ModuleLoader__.load({
         'toast.ok': 'PDF written to {path} (engine: {engine})',
         'toast.warnings': 'warnings: {message}',
         'toast.failed': 'PDF export failed: {message}',
+        'toast.previewUnavailable': 'the DSH preview could not open; open the PDF from {path}',
         'engine.dsh': 'DSH',
         'settings.label': 'dsh-md2pdf',
         'settings.heading': 'Printed page styles',
@@ -114,6 +115,20 @@ window.__ModuleLoader__.load({
         'settings.pageResetFailed': 'Could not reset page settings: {message}',
         'settings.pageInvalid': 'Page settings are out of range.',
         'settings.pageUnsupported': 'This preset uses an unsupported @page form ({detail}); printing uses one uniform page box.',
+        'settings.fontHeading': 'Fonts',
+        'settings.fontHint': 'Families declared by the preset in use. Availability is checked in this window; a @font-face family stays unverified.',
+        'settings.fontEmpty': 'The selected preset declares no specific font family.',
+        'settings.fontFamily': 'Family',
+        'settings.fontCjk': 'CJK',
+        'settings.fontLatin': 'Latin',
+        'settings.fontState': 'State',
+        'settings.fontAvailable': 'available',
+        'settings.fontMissingCjk': 'missing CJK',
+        'settings.fontMissingLatin': 'missing Latin',
+        'settings.fontMissingBoth': 'missing CJK and Latin',
+        'settings.fontUnverified': 'unverified',
+        'settings.fontsSummary': 'Available {available}, missing CJK {cjk}, missing Latin {latin}, unverified {unverified}.',
+        'settings.fontFaceNote': 'A @font-face family is marked unverified because this window has not confirmed it is loaded.',
         'settings.presetLabel': 'Presets',
         'settings.selected': 'In use: {name}',
         'settings.editing': 'Editing: {name}',
@@ -172,6 +187,7 @@ window.__ModuleLoader__.load({
         'toast.ok': 'PDF 已输出到 {path}（引擎：{engine}）',
         'toast.warnings': '警告：{message}',
         'toast.failed': '导出 PDF 失败：{message}',
+        'toast.previewUnavailable': 'DSH 预览未能打开；请从 {path} 打开 PDF',
         'engine.dsh': 'DSH 内置',
         'settings.label': 'dsh-md2pdf',
         'settings.heading': '打印样式',
@@ -198,6 +214,20 @@ window.__ModuleLoader__.load({
         'settings.pageResetFailed': '重置页面设置失败：{message}',
         'settings.pageInvalid': '页面设置的取值超出范围。',
         'settings.pageUnsupported': '此预设使用了不支持的 @page 写法（{detail}）；打印按统一页框处理。',
+        'settings.fontHeading': '字体',
+        'settings.fontHint': '当前预设声明的字体族。可用性在本窗口检测；@font-face 自定义字体标为未验证。',
+        'settings.fontEmpty': '当前预设未声明具体字体族。',
+        'settings.fontFamily': '字体',
+        'settings.fontCjk': '汉字',
+        'settings.fontLatin': '拉丁',
+        'settings.fontState': '状态',
+        'settings.fontAvailable': '可用',
+        'settings.fontMissingCjk': '缺汉字',
+        'settings.fontMissingLatin': '缺拉丁',
+        'settings.fontMissingBoth': '缺汉字和拉丁',
+        'settings.fontUnverified': '未验证',
+        'settings.fontsSummary': '可用 {available}，缺汉字 {cjk}，缺拉丁 {latin}，未验证 {unverified}。',
+        'settings.fontFaceNote': '@font-face 声明的字体在本窗口尚未确认加载，因此标为未验证。',
         'settings.presetLabel': '版式预设',
         'settings.selected': '当前使用：{name}',
         'settings.editing': '正在编辑：{name}',
@@ -534,6 +564,17 @@ window.__ModuleLoader__.load({
     function printEngineOf(ready) {
       const value = ready !== null && typeof ready === 'object' ? ready.printEngine : undefined
       return value === 'dsh' || value === 'browser' ? value : 'auto'
+    }
+
+    /**
+     * Read the configured post-export action. An unknown or absent value means
+     * the DSH preview, which is the default the design asks for.
+     * @param ready - the capability answer, or null.
+     * @returns `dsh`, `system`, or `none`.
+     */
+    function afterExportOf(ready) {
+      const value = ready !== null && typeof ready === 'object' ? ready.afterExport : undefined
+      return value === 'system' || value === 'none' ? value : 'dsh'
     }
 
     /**
@@ -1144,6 +1185,24 @@ window.__ModuleLoader__.load({
 }
 .md2pdf-input:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #2f6fa8); outline-offset: 1px; }
 .md2pdf-warn { margin: 0; font-size: 12px; line-height: 1.6; color: var(--dsw-alias-state-warn-primary, #b45309); }
+.md2pdf-font-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.md2pdf-font-table th,
+.md2pdf-font-table td {
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1, #e6e9ee);
+  vertical-align: top;
+}
+.md2pdf-font-table th { font-weight: 500; color: var(--dsw-alias-label-secondary, #6b7280); }
+.md2pdf-font-name { word-break: break-word; }
+.md2pdf-font-mark { width: 44px; text-align: center; }
+.md2pdf-font-state { white-space: nowrap; }
+.md2pdf-font-state[data-state="available"] { color: var(--dsw-alias-state-success-primary, #2f8f5b); }
+.md2pdf-font-state[data-state="cjk"],
+.md2pdf-font-state[data-state="latin"],
+.md2pdf-font-state[data-state="both"] { color: var(--dsw-alias-state-warn-primary, #b45309); }
+.md2pdf-font-state[data-state="face"],
+.md2pdf-font-state[data-state="unknown"] { color: var(--dsw-alias-label-secondary, #6b7280); }
 .md2pdf-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .md2pdf-btn {
   font: inherit;
@@ -1210,6 +1269,67 @@ window.__ModuleLoader__.load({
             },
           })
           : null)
+    }
+
+    /**
+     * Ask this window whether one family covers a sample character.
+     *
+     * The Font Loading API is the check the design names. A window without it
+     * returns null, which the table renders as unverified rather than missing.
+     * @param family - one concrete family name.
+     * @param sample - one character the family should cover.
+     * @returns true, false, or null when this window cannot check.
+     */
+    function fontAvailable(family, sample) {
+      if (typeof document === 'undefined') return null
+      if (document.fonts === undefined || document.fonts === null) return null
+      if (typeof document.fonts.check !== 'function') return null
+      try {
+        return document.fonts.check(`16px ${JSON.stringify(family)}`, sample) === true
+      } catch {
+        return null
+      }
+    }
+
+    /**
+     * Turn the Host's font table into rows with this window's availability.
+     *
+     * The Host sends `{ family, face }` only. Any availability field would be a
+     * guess from the wrong machine, so the check happens here.
+     * @param table - the settings route's `fonts` value.
+     * @returns family rows with the CJK and Latin results.
+     */
+    function checkFonts(table) {
+      if (!Array.isArray(table)) return []
+      return table
+        .filter(entry => entry !== null && typeof entry === 'object'
+          && typeof entry.family === 'string' && entry.family !== '')
+        .map((entry) => {
+          const family = entry.family
+          // A face family is not a system family; until this window proves it
+          // loaded, the table must not call it available.
+          if (entry.face === true) return { family, face: true, cjk: null, latin: null }
+          return {
+            family,
+            face: false,
+            cjk: fontAvailable(family, '汉'),
+            latin: fontAvailable(family, 'A'),
+          }
+        })
+    }
+
+    /**
+     * Classify one checked family for the table.
+     * @param font - one row from {@link checkFonts}.
+     * @returns a stable state name used by the row and the summary.
+     */
+    function fontState(font) {
+      if (font.face === true) return 'face'
+      if (font.cjk === null || font.latin === null) return 'unknown'
+      if (font.cjk === false && font.latin === false) return 'both'
+      if (font.cjk === false) return 'cjk'
+      if (font.latin === false) return 'latin'
+      return 'available'
     }
 
     /** One labelled control in the page settings form. */
@@ -1464,18 +1584,6 @@ window.__ModuleLoader__.load({
             printOptions: payload.printOptions,
             sessionId: input.sessionId,
           })
-          if (typeof result.previewAddress === 'string'
-            && result.previewAddress !== ''
-            && ctx.sidebarRight !== undefined
-            && typeof ctx.sidebarRight.openResource === 'function') {
-            try {
-              ctx.sidebarRight.openResource(result.previewAddress)
-            } catch (error) {
-              // A viewer that refuses the address leaves the written PDF in
-              // place; the success toast still reports the path.
-              console.warn('md2pdf: could not open the PDF preview', error)
-            }
-          }
           return result
         }
 
@@ -1511,6 +1619,37 @@ window.__ModuleLoader__.load({
         }
 
         /**
+         * Open the DSH viewer after a successful DSH export.
+         *
+         * The client opens only the address the Host computed; it never builds
+         * a path. When the viewer or the address is missing, the success toast
+         * still names the PDF and says where to open it.
+         * @param result - the Host's finish result.
+         * @returns a note for the success toast, or null when none is needed.
+         */
+        function openPreview(result) {
+          if (afterExportOf(capabilityValue) !== 'dsh') return null
+          const path = String(result?.pdfPath ?? '')
+          const address = result?.previewAddress
+          if (typeof address !== 'string' || address === '') {
+            return t('toast.previewUnavailable', { path })
+          }
+          if (ctx.sidebarRight === undefined
+            || typeof ctx.sidebarRight.openResource !== 'function') {
+            return t('toast.previewUnavailable', { path })
+          }
+          try {
+            ctx.sidebarRight.openResource(result.previewAddress)
+            return null
+          } catch (error) {
+            // A viewer that refuses the address leaves the written PDF in
+            // place; the success toast still reports the path.
+            console.warn('md2pdf: could not open the PDF preview', error)
+            return t('toast.previewUnavailable', { path })
+          }
+        }
+
+        /**
          * Export one file and report the result.
          * @returns whether the Host wrote a PDF.
          */
@@ -1527,6 +1666,12 @@ window.__ModuleLoader__.load({
             let message = t('toast.ok', { path: outcome.result.pdfPath, engine })
             if (warnings.length > 0) {
               message += ` — ${t('toast.warnings', { message: warnings.join('; ') })}`
+            }
+            // The viewer is a DSH export surface. A browser fallback has no
+            // preview address, and opening its file path is a separate action.
+            if (outcome.result.engine === 'dsh') {
+              const previewNote = openPreview(outcome.result)
+              if (previewNote !== null) message += ` — ${previewNote}`
             }
             notify(message, true)
             return true
@@ -1637,6 +1782,7 @@ window.__ModuleLoader__.load({
             landscape: PAGE_DEFAULTS.landscape,
           }))
           const [pageBusy, setPageBusy] = React.useState(false)
+          const [fonts, setFonts] = React.useState([])
 
           const nameOf = React.useCallback((id) => {
             const found = presets.find(preset => preset.id === id)
@@ -1678,6 +1824,9 @@ window.__ModuleLoader__.load({
             setPageBaseline(basePageOf(cssText))
             setPageDraft(pageFormOf(effectivePageOf(cssText, current === undefined ? undefined : current.page)))
             setSelectedCss(cssText)
+            // The Host sends families and whether each came from @font-face.
+            // This window adds the CJK and Latin checks.
+            setFonts(checkFonts(Array.isArray(payload.fonts) ? payload.fonts : []))
           }, [])
 
           /** Reload the library and put the selected preset back in the editor. */
@@ -1924,6 +2073,21 @@ window.__ModuleLoader__.load({
           const missingBuiltin = builtins.some(id => !presets.some(preset => preset.id === id))
           const pageCssSource = editingId === selected ? css : selectedCss
           const pageForms = unsupportedPageForms(pageCssSource)
+          const fontRows = fonts.map(font => ({ font, state: fontState(font) }))
+          const fontStateText = (state) => {
+            if (state === 'available') return t('settings.fontAvailable')
+            if (state === 'cjk') return t('settings.fontMissingCjk')
+            if (state === 'latin') return t('settings.fontMissingLatin')
+            if (state === 'both') return t('settings.fontMissingBoth')
+            return t('settings.fontUnverified')
+          }
+          const fontSummary = {
+            available: fontRows.filter(row => row.state === 'available').length,
+            cjk: fontRows.filter(row => row.state === 'cjk' || row.state === 'both').length,
+            latin: fontRows.filter(row => row.state === 'latin' || row.state === 'both').length,
+            unverified: fontRows.filter(row => row.state === 'face' || row.state === 'unknown').length,
+          }
+          const hasFaceFamily = fontRows.some(row => row.state === 'face')
           const editingLabel = editingId === null ? t('settings.editingNew') : t('settings.editing', { name })
           const engineText = engine === null
             ? t('settings.engineChecking')
@@ -2064,6 +2228,55 @@ window.__ModuleLoader__.load({
               'data-md2pdf': 'page-warning',
               role: 'status',
             }, t('settings.pageUnsupported', { detail: pageForms.join(', ') })))
+          }
+
+          rows.push(h('h3', { key: 'fonts-heading', className: 'md2pdf-heading' }, t('settings.fontHeading')))
+          rows.push(h('p', { key: 'fonts-hint', className: 'md2pdf-hint' }, t('settings.fontHint')))
+          if (fontRows.length === 0) {
+            rows.push(h('p', {
+              key: 'fonts-empty',
+              className: 'md2pdf-hint',
+              'data-md2pdf-fonts': 'empty',
+            }, t('settings.fontEmpty')))
+          } else {
+            rows.push(h('p', {
+              key: 'fonts-summary',
+              className: 'md2pdf-hint',
+              'data-md2pdf-fonts': 'summary',
+              'data-available': String(fontSummary.available),
+              'data-missing-cjk': String(fontSummary.cjk),
+              'data-missing-latin': String(fontSummary.latin),
+              'data-unverified': String(fontSummary.unverified),
+            }, t('settings.fontsSummary', fontSummary)))
+            rows.push(h('table', {
+              key: 'fonts-table',
+              className: 'md2pdf-font-table',
+              'data-md2pdf-fonts': 'table',
+            },
+            h('thead', null, h('tr', null,
+              h('th', { scope: 'col' }, t('settings.fontFamily')),
+              h('th', { scope: 'col' }, t('settings.fontCjk')),
+              h('th', { scope: 'col' }, t('settings.fontLatin')),
+              h('th', { scope: 'col' }, t('settings.fontState')))),
+            h('tbody', null, fontRows.map(({ font, state }) => h('tr', {
+              key: `font-${font.family}`,
+              'data-font': font.family,
+              'data-state': state,
+            },
+            h('td', { className: 'md2pdf-font-name' }, font.family),
+            h('td', { className: 'md2pdf-font-mark' }, font.cjk === null ? '—' : font.cjk ? '✓' : '✗'),
+            h('td', { className: 'md2pdf-font-mark' }, font.latin === null ? '—' : font.latin ? '✓' : '✗'),
+            h('td', null, h('span', {
+              className: 'md2pdf-font-state',
+              'data-state': state,
+            }, fontStateText(state))))))))
+            if (hasFaceFamily) {
+              rows.push(h('p', {
+                key: 'fonts-face-note',
+                className: 'md2pdf-hint',
+                'data-md2pdf-fonts': 'face-note',
+              }, t('settings.fontFaceNote')))
+            }
           }
 
           rows.push(h('div', { key: 'editor-head', className: 'md2pdf-row' },

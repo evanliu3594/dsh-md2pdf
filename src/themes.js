@@ -28,9 +28,9 @@ export const DEFAULT_THEME = 'lark'
 const LATIN = '"Times New Roman",Times,"Liberation Serif","Nimbus Roman"'
 const FANGSONG = `${LATIN},"FangSong","FangSong_GB2312","STFangsong","仿宋",FangSong,serif`
 const SONG = `${LATIN},"SimSun","宋体","Songti SC","STSong","Source Han Serif SC","Noto Serif CJK SC",serif`
-const HEITI = `${LATIN},"SimHei","黑体","Source Han Sans SC","Noto Sans CJK SC",sans-serif`
-const KAITI = `${LATIN},"KaiTi","KaiTi_GB2312","STKaiti","楷体",KaiTi,serif`
-const XIAOBIAOSONG = `${LATIN},"FZXiaoBiaoSong-B05S","方正小标宋简体","STZhongsong","华文中宋","SimSun","宋体",serif`
+const HEITI = `${LATIN},"SimHei","黑体","Heiti SC","PingFang SC","Source Han Sans SC","Noto Sans CJK SC",sans-serif`
+const KAITI = `${LATIN},"KaiTi","KaiTi_GB2312","STKaiti","Kaiti SC","楷体",KaiTi,serif`
+const XIAOBIAOSONG = `${LATIN},"FZXiaoBiaoSong-B05S","方正小标宋简体","STZhongsong","华文中宋","Songti SC","SimSun","宋体",serif`
 
 /** Rules shared by the two national-standard presets: a three-line table. */
 const THREE_LINE_TABLE = `

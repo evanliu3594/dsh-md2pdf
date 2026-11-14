@@ -651,11 +651,23 @@ export async function exportMarkdownToPdf(request, options = {}) {
 }
 
 /**
+ * Normalize the post-export action from row configuration.
+ *
+ * `dsh` opens the DSH viewer, `system` uses the platform default program, and
+ * `none` only reports the path. An absent or unknown value means `dsh`.
+ * @param value - the configured `afterExport` value.
+ * @returns `dsh`, `system`, or `none`.
+ */
+function afterExportMode(value) {
+  return value === 'system' || value === 'none' ? value : 'dsh'
+}
+
+/**
  * Report what this Host can print with, once, for a capability check.
  *
  * The Host knows its browser path and the configured print engine. The DSH
  * printer lives in the client, so `dsh` is reported as unknown, never guessed.
- * @param options - print engine preference and explicit paths.
+ * @param options - print engine preference, post-export action, and explicit paths.
  * @returns the browser path, the configured engine, and the render settings.
  */
 export async function describeCapability(options = {}) {
@@ -669,6 +681,7 @@ export async function describeCapability(options = {}) {
     available: engines.available,
     browser: engines.available.browser,
     printEngine: configured,
+    afterExport: afterExportMode(options.afterExport),
     dsh: 'unknown',
     renderer: options.renderer ?? 'builtin',
     theme: selected,
