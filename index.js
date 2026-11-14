@@ -1,10 +1,12 @@
 /**
  * Host half of the md2pdf bundle.
  *
- * Two routes carry the browser's export request and the capability probe the
- * client uses to decide whether its controls are usable at all; one tool lets
- * the agent run the same operation. Both callers enter `exportMarkdownToPdf`,
- * so placement, validation, and failure codes have a single definition.
+ * The browser's export path is two steps: `/md2pdf/prepare` renders the page and
+ * creates a print job, and `/md2pdf/finish` receives the PDF bytes the DSH
+ * client printed. `/md2pdf/export` stays as the browser fallback for the Web
+ * GUI, the agent tool, and any install without a DSH printer. The capability
+ * route reports the Host's browser and leaves the client-side DSH printer
+ * unknown.
  *
  * Every route asks the composition's `connection` service for a rejection
  * first: that fence checks Host and Origin and the browser's login token, so
@@ -13,7 +15,9 @@
  */
 import { isAbsolute } from 'node:path'
 
-import { describeCapability, exportMarkdownToPdf, MARKDOWN_EXTENSIONS } from './src/export.js'
+import {
+  describeCapability, exportMarkdownToPdf, finishExport, MARKDOWN_EXTENSIONS, prepareExport,
+} from './src/export.js'
 import { openPath } from './src/opener.js'
 import { PdfError } from './src/pdf.js'
 import {
@@ -25,6 +29,12 @@ import { THEMES } from './src/themes.js'
 
 /** Route serving one export request. */
 export const EXPORT_PATH = '/md2pdf/export'
+
+/** Route rendering a document and creating one print job. */
+export const PREPARE_PATH = '/md2pdf/prepare'
+
+/** Route accepting the PDF bytes a DSH client printed. */
+export const FINISH_PATH = '/md2pdf/finish'
 
 /** Route reporting which printers this Host can use. */
 export const CAPABILITY_PATH = '/md2pdf/capability'
@@ -40,6 +50,9 @@ export const PREVIEWS_PATH = '/md2pdf/previews'
 
 /** Request bodies are small JSON objects; anything larger is hostile. */
 const MAX_BODY_BYTES = 1024 * 1024
+
+/** The PDF a client may return in one finish request. */
+const MAX_PDF_BYTES = 64 * 1024 * 1024
 
 /** The route carrier, the trust fence, and the tool registry. */
 export const inject = ['webServer', 'connection', 'tools']
@@ -58,6 +71,13 @@ const FAILURE_STATUS = {
   'empty-output': 502,
   'print-failed': 502,
   'no-printer': 503,
+  'pdf-invalid': 502,
+  'finish-conflict': 409,
+  'state-conflict': 409,
+  'file-busy': 409,
+  'asset-server-failed': 500,
+  'job-timeout': 504,
+  'client-required': 503,
 }
 
 /**
@@ -114,6 +134,27 @@ async function readBoundedBody(req) {
 }
 
 /**
+ * Collect a bounded binary request body.
+ * @param req - the request to read.
+ * @param maxBytes - largest accepted body.
+ * @returns the body bytes, or null past the ceiling.
+ */
+async function readBoundedBinary(req, maxBytes) {
+  const chunks = []
+  let size = 0
+  for await (const chunk of req) {
+    const piece = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += piece.byteLength
+    if (size > maxBytes) {
+      req.resume()
+      return null
+    }
+    chunks.push(piece)
+  }
+  return Buffer.concat(chunks, size)
+}
+
+/**
  * Parse the export body, rejecting anything the operation cannot use.
  * @returns the request, or null when the body is unusable.
  */
@@ -132,6 +173,33 @@ function parseExportBody(text) {
   if (typeof body.engine === 'string') request.engine = body.engine
   if (typeof body.browserPath === 'string' && body.browserPath !== '') request.browserPath = body.browserPath
   if (typeof body.page === 'object' && body.page !== null) request.page = body.page
+  return request
+}
+
+/**
+ * Parse the prepare body.
+ *
+ * Only the source path and render overrides are accepted. The target path, the
+ * asset root, and any command stay Host-owned, so the client cannot choose
+ * where a PDF is written.
+ * @returns the request, or null when the body is unusable.
+ */
+function parsePrepareBody(text) {
+  let body
+  try {
+    body = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return null
+  if (typeof body.path !== 'string' || body.path === '') return null
+  const request = { path: body.path, owner: 'ui' }
+  if (typeof body.sessionId === 'string' && body.sessionId !== '') request.sessionId = body.sessionId
+  if (typeof body.preset === 'string' && body.preset !== '') request.preset = body.preset
+  if (typeof body.page === 'object' && body.page !== null) request.page = body.page
+  if (typeof body.documentConfig === 'object' && body.documentConfig !== null) {
+    request.documentConfig = body.documentConfig
+  }
   return request
 }
 
@@ -185,6 +253,7 @@ function failureResponse(error) {
 export function apply(ctx, config) {
   const options = {
     engine: config?.engine,
+    printEngine: config?.printEngine,
     browserPath: config?.browserPath,
     pandocPath: config?.pandocPath,
     renderer: config?.renderer,
@@ -305,6 +374,95 @@ export function apply(ctx, config) {
         })
     },
   }), `md2pdf: GET ${CAPABILITY_PATH}`)
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: PREPARE_PATH,
+    handler: async (req, res) => {
+      if (refused(ctx, req, res)) return
+      if (req.method !== 'POST') {
+        res.statusCode = 405
+        res.setHeader('allow', 'POST')
+        res.end()
+        return
+      }
+      const essence = String(req.headers['content-type']).split(';', 1)[0]?.trim().toLowerCase()
+      if (essence !== 'application/json') {
+        sendJson(res, 415, { ok: false, code: 'unsupported-media-type', message: 'content-type must be application/json' })
+        return
+      }
+      let text
+      try {
+        text = await readBoundedBody(req)
+      } catch {
+        sendJson(res, 400, { ok: false, code: 'bad-request', message: 'request body unreadable' })
+        return
+      }
+      if (text === null) {
+        sendJson(res, 413, { ok: false, code: 'payload-too-large', message: 'request body is too large' })
+        return
+      }
+      const request = parsePrepareBody(text)
+      if (request === null) {
+        sendJson(res, 400, { ok: false, code: 'bad-request', message: 'body must be JSON with a string "path"' })
+        return
+      }
+      try {
+        sendJson(res, 200, await prepareExport(withSessionDirectory(ctx, request), options))
+      } catch (error) {
+        const failure = failureResponse(error)
+        sendJson(res, failure.status, { ok: false, ...failure })
+      }
+    },
+  }), `md2pdf: POST ${PREPARE_PATH}`)
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: FINISH_PATH,
+    handler: async (req, res) => {
+      if (refused(ctx, req, res)) return
+      if (req.method !== 'POST') {
+        res.statusCode = 405
+        res.setHeader('allow', 'POST')
+        res.end()
+        return
+      }
+      const essence = String(req.headers['content-type']).split(';', 1)[0]?.trim().toLowerCase()
+      if (essence !== 'application/pdf') {
+        sendJson(res, 415, { ok: false, code: 'unsupported-media-type', message: 'content-type must be application/pdf' })
+        return
+      }
+      const header = req.headers['x-md2pdf-token']
+      const finishToken = typeof header === 'string' ? header.trim() : ''
+      if (finishToken === '') {
+        sendJson(res, 400, { ok: false, code: 'bad-request', message: 'x-md2pdf-token is required' })
+        return
+      }
+      const declared = Number(req.headers['content-length'])
+      if (Number.isFinite(declared) && declared > MAX_PDF_BYTES) {
+        req.resume()
+        sendJson(res, 413, { ok: false, code: 'payload-too-large', message: 'PDF body is too large' })
+        return
+      }
+      let pdfBytes
+      try {
+        pdfBytes = await readBoundedBinary(req, MAX_PDF_BYTES)
+      } catch {
+        sendJson(res, 400, { ok: false, code: 'bad-request', message: 'request body unreadable' })
+        return
+      }
+      if (pdfBytes === null) {
+        sendJson(res, 413, { ok: false, code: 'payload-too-large', message: 'PDF body is too large' })
+        return
+      }
+      try {
+        sendJson(res, 200, await finishExport({ finishToken, pdfBytes }, options))
+      } catch (error) {
+        const failure = failureResponse(error)
+        sendJson(res, failure.status, { ok: false, ...failure })
+      }
+    },
+  }), `md2pdf: POST ${FINISH_PATH}`)
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',

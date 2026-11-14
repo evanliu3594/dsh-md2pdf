@@ -37,6 +37,28 @@ export const DEFAULT_PAGE = Object.freeze({
   landscape: false,
 })
 
+/**
+ * The page policy carried inside the printable document itself.
+ *
+ * The DSH path is guarded by the resource server's response header. This meta
+ * tag is what guards the browser fallback, where the page is loaded from a
+ * `file:` URL and no response header exists. `file:` is allowed for images,
+ * fonts, and the base URL only, which is what a local document with relative
+ * assets needs; scripts, frames, objects, forms, and network access stay off.
+ */
+export const PRINT_CSP = [
+  "default-src 'none'",
+  "img-src 'self' data: file:",
+  "style-src 'unsafe-inline'",
+  "font-src 'self' data: file:",
+  "script-src 'none'",
+  "connect-src 'none'",
+  "frame-src 'none'",
+  "object-src 'none'",
+  "form-action 'none'",
+  "base-uri 'self' file:",
+].join('; ')
+
 /** The paper stylesheet; `page` values are interpolated once per document. */
 function stylesheet(page) {
   const margin = page.marginMm
@@ -232,6 +254,7 @@ export function buildHtml(input, page = DEFAULT_PAGE) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="generator" content="dsh-md2pdf">
+<meta http-equiv="Content-Security-Policy" content="${escape(PRINT_CSP)}">
 <title>${escape(input.title)}</title>
 ${base}
 <style>

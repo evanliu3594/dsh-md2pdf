@@ -1,16 +1,16 @@
 /**
- * Paper output engines.
+ * Paper output: the browser fallback and PDF payload validation.
  *
- * Two printers exist because the two hosts differ. A Chromium-family browser
- * prints a `file:` document from its own process, which works from any Node
- * host; inside the Desktop shell the running Electron binary prints the same
- * document without starting a second browser. Both honour the stylesheet's
- * `@page` box, so the page geometry a caller asks for is the geometry it gets.
+ * The DSH path renders HTML and lets the DSH client's own Chromium print it.
+ * This module owns the fallback that works from any Node host: a Chromium-family
+ * browser prints a `file:` document, and the caller waits for the written file.
+ * The host Electron printer was removed in v2 because the Host process cannot
+ * reach the Electron main process.
  *
- * Every engine writes the target file and then verifies the leading `%PDF-`
- * bytes, so a printer that exits zero without producing paper still fails.
+ * Both paths share {@link verifyPdf}, so a printer that exits zero without a
+ * complete PDF still fails.
  */
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -106,34 +106,19 @@ export async function findBrowser(options = {}) {
   return resolved
 }
 
-/** Whether the running process is an Electron main process with printing. */
-async function electronPrinter() {
-  if (process.versions.electron === undefined) return null
-  try {
-    const electron = await import('electron')
-    const browserWindow = electron.BrowserWindow
-    if (typeof browserWindow !== 'function') return null
-    return browserWindow
-  } catch {
-    return null
-  }
-}
-
 /**
- * Describe which engines this host can use without printing anything.
+ * Describe which engine this Host can use without printing anything.
+ *
+ * The only Host-side engine is the browser fallback. The DSH engine lives in the
+ * client, so the Host reports it as unknown rather than guessing.
  * @param options - engine preference and explicit paths.
- * @returns the chosen engine, the alternatives, and the resolved executables.
+ * @returns the requested engine, the chosen engine, and the resolved executable.
  */
 export async function describeEngines(options = {}) {
   const request = options.engine ?? 'auto'
-  const [browser, electron] = await Promise.all([findBrowser(options), electronPrinter()])
-  const available = {
-    browser: browser === null ? null : browser,
-    electron: electron === null ? null : 'electron',
-  }
-  const ordered = request === 'auto' ? ['electron', 'browser'] : [request]
-  const chosen = ordered.find(candidate => available[candidate] !== null) ?? null
-  return { request, chosen, available }
+  const browser = await findBrowser(options)
+  const available = { browser: browser === null ? null : browser }
+  return { request, chosen: available.browser, available }
 }
 
 /** Throwable carrier for one named renderer failure. */
@@ -147,6 +132,36 @@ export class PdfError extends Error {
     this.name = 'PdfError'
     this.code = code
   }
+}
+
+/** Leading bytes every accepted PDF starts with. */
+const PDF_HEADER = Buffer.from('%PDF-', 'latin1')
+
+/** Trailer bytes every accepted PDF ends with. */
+const PDF_TRAILER = Buffer.from('%%EOF', 'latin1')
+
+/** How much of the end of the byte stream may hold the trailer. */
+const PDF_TRAILER_BYTES = 2048
+
+/**
+ * Validate one PDF payload.
+ *
+ * This mirrors the print-job store's predicate so the exporter and the commit
+ * step cannot disagree about what a complete document is.
+ * @param pdfBytes - bytes returned by a printer.
+ * @returns `{ ok: true }`, or `{ ok: false, code }` with a stable failure code.
+ */
+export function verifyPdf(pdfBytes) {
+  const bytes = Buffer.isBuffer(pdfBytes)
+    ? pdfBytes
+    : pdfBytes instanceof Uint8Array ? Buffer.from(pdfBytes) : null
+  if (bytes === null) return { ok: false, code: 'pdf-invalid' }
+  if (bytes.byteLength === 0) return { ok: false, code: 'empty-output' }
+  if (bytes.byteLength < PDF_HEADER.length) return { ok: false, code: 'pdf-invalid' }
+  if (!bytes.subarray(0, PDF_HEADER.length).equals(PDF_HEADER)) return { ok: false, code: 'pdf-invalid' }
+  const tail = bytes.subarray(Math.max(0, bytes.byteLength - PDF_TRAILER_BYTES))
+  if (!tail.includes(PDF_TRAILER)) return { ok: false, code: 'pdf-invalid' }
+  return { ok: true }
 }
 
 /**
@@ -201,19 +216,24 @@ export async function awaitPdf(path, before, settleMs) {
 
 /**
  * Print one HTML file with a Chromium-family browser.
+ *
+ * The caller passes a staging path, not the final target, so the exporter can
+ * validate the bytes and rename them into place. Chromium reports its exit
+ * before the renderer has flushed the document, so the wait polls the file.
  * @param htmlPath - the `file:` document to print.
- * @param outPath - absolute PDF target.
- * @param options - engine preference, explicit paths, and deadlines.
- * @returns the chosen executable and produced byte count.
+ * @param outPath - absolute staging path for the PDF.
+ * @param options - explicit browser path and deadlines.
+ * @returns the produced byte count and the executable that printed it.
+ * @throws {PdfError} when no browser is installed, the run fails, or the
+ *   produced file is not a complete PDF.
  */
-async function printWithBrowser(htmlPath, outPath, options) {
+export async function printBrowser(htmlPath, outPath, options = {}) {
   const browser = await findBrowser(options)
   if (browser === null) throw new PdfError('no-printer', 'no Chromium-family browser found')
   const before = await snapshotOf(outPath)
   const profile = await mkdtemp(join(tmpdir(), 'dsh-md2pdf-profile-'))
-  let result
   try {
-    result = await run(browser, [
+    const result = await run(browser, [
       ...PRINT_FLAGS,
       `--user-data-dir=${profile}`,
       `--print-to-pdf=${outPath}`,
@@ -230,83 +250,16 @@ async function printWithBrowser(htmlPath, outPath, options) {
         `browser exited without writing ${outPath}${result.stderr.trim() === '' ? '' : `: ${result.stderr.trim().slice(0, 400)}`}`,
       )
     }
-    return { engine: 'browser', printer: browser, bytes }
+    const written = await readFile(outPath).catch(() => null)
+    if (written === null) {
+      throw new PdfError('print-failed', `browser wrote a file that is no longer readable: ${outPath}`)
+    }
+    const verified = verifyPdf(written)
+    if (!verified.ok) {
+      throw new PdfError(verified.code, `the browser left an unusable PDF at ${outPath}`)
+    }
+    return { engine: 'browser', printer: browser, bytes: written.byteLength }
   } finally {
     await rm(profile, { recursive: true, force: true, maxRetries: 3 }).catch(() => {})
-  }
-}
-
-/**
- * Print one HTML file inside the running Electron process.
- * @param htmlPath - the `file:` document to print.
- * @param outPath - absolute PDF target.
- * @param page - page geometry.
- * @returns the engine name and produced byte count.
- */
-async function printWithElectron(htmlPath, outPath, page) {
-  const BrowserWindow = await electronPrinter()
-  if (BrowserWindow === null) throw new PdfError('no-printer', 'this process cannot print with Electron')
-  const window = new BrowserWindow({
-    show: false,
-    width: 1280,
-    height: 1600,
-    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, javascript: true },
-  })
-  try {
-    await window.loadURL(pathToFileURL(htmlPath).href)
-    // Give layout, fonts, and file images one compositor frame to settle.
-    await new Promise((resolve) => { setTimeout(resolve, 350) })
-    const marginInches = page.marginMm / 25.4
-    const data = await window.webContents.printToPDF({
-      printBackground: true,
-      landscape: page.landscape,
-      pageSize: page.size,
-      margins: { top: marginInches, bottom: marginInches, left: marginInches, right: marginInches },
-      displayHeaderFooter: false,
-      preferCSSPageSize: false,
-    })
-    if (data.byteLength < 5 || data.subarray(0, 5).toString('latin1') !== '%PDF-') {
-      throw new PdfError('not-a-pdf', 'Electron returned no PDF bytes')
-    }
-    await writeFile(outPath, data)
-    return { engine: 'electron', printer: 'electron', bytes: data.byteLength }
-  } finally {
-    window.destroy()
-  }
-}
-
-/**
- * Print a printable document to a PDF file.
- * @param html - the complete HTML document.
- * @param outPath - absolute PDF target; an existing file is replaced.
- * @param input - page geometry and engine preferences.
- * @returns the engine, printer, and produced byte count.
- */
-export async function printPdf(html, outPath, input) {
-  const page = input.page
-  const options = {
-    engine: input.engine ?? 'auto',
-    browserPath: input.browserPath,
-    timeoutMs: input.timeoutMs,
-  }
-  const work = await mkdtemp(join(tmpdir(), 'dsh-md2pdf-'))
-  const htmlPath = join(work, 'document.html')
-  try {
-    await writeFile(htmlPath, html, 'utf8')
-    if (options.engine === 'browser') return await printWithBrowser(htmlPath, outPath, options)
-    if (options.engine === 'electron') return await printWithElectron(htmlPath, outPath, page)
-
-    // The Desktop shell prints from its own process: no second browser starts,
-    // and the page never leaves the application. A plain Node host falls back
-    // to a Chromium-family browser.
-    if (await electronPrinter() !== null) return await printWithElectron(htmlPath, outPath, page)
-    const browser = await findBrowser(options)
-    if (browser !== null) return await printWithBrowser(htmlPath, outPath, options)
-    throw new PdfError(
-      'no-printer',
-      'no PDF printer found: install Microsoft Edge or Google Chrome, or run inside the Desktop application',
-    )
-  } finally {
-    await rm(work, { recursive: true, force: true, maxRetries: 3 }).catch(() => {})
   }
 }

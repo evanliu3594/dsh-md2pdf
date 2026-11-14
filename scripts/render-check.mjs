@@ -143,6 +143,15 @@ expectContains('page font stack has CJK', page, 'Microsoft YaHei')
 expectContains('page title escaped', buildHtml({ title: '<x>', body: '' }, DEFAULT_PAGE), '&lt;x&gt;')
 expectContains('page base href', buildHtml({ title: 'T', body: '', baseHref: 'file:///D:/a/' }, DEFAULT_PAGE), '<base href="file:///D:/a/">')
 
+// The printable page carries its own policy so the browser fallback, which has
+// no response header, cannot load scripts, frames, or network resources.
+expectContains('page carries a csp meta', page, '<meta http-equiv="Content-Security-Policy"')
+expectContains('page csp blocks scripts', page, "script-src 'none'")
+expectContains('page csp blocks connections', page, "connect-src 'none'")
+expectContains('page csp allows file images', page, "img-src 'self' data: file:")
+expectContains('page csp allows file fonts', page, "font-src 'self' data: file:")
+expectContains('page csp allows the file base', page, "base-uri 'self' file:")
+
 // The user stylesheet rides after the built-in sheet and cannot break out of it.
 const customPage = buildHtml({ title: 'T', body: '', customCss: 'body{color:red}' }, DEFAULT_PAGE)
 expectContains('custom css block', customPage, '<style id="md2pdf-custom">')
