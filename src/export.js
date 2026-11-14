@@ -21,6 +21,7 @@ import { access, lstat, mkdtemp, open, readFile, rename, rm, stat, writeFile } f
 import { tmpdir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 
+import { scanAssets } from './asset-scan.js'
 import { mergeDocumentConfig } from './document-config.js'
 import { DEFAULT_PAGE } from './document.js'
 import { baseHrefOf, renderDocument } from './html-build.js'
@@ -391,11 +392,12 @@ async function commitFinish(job, finishToken, pdfBytes, jobs) {
 /**
  * Render one markdown document, start its loopback server, and create a job.
  *
- * The page merges, lowest to highest, preset page metadata (empty until the page
- * settings task), the file's flat `pdf.*` front matter, and this request's
- * explicit override. The preset is chosen by request, then `pdf.preset`, then
- * the selected preset. `mergeDocumentConfig` parses the front matter and returns
- * the unknown-key warnings this transport reports.
+ * The page merges, lowest to highest, the preset's saved page metadata, the
+ * file's flat `pdf.*` front matter, and this request's explicit override. The
+ * preset is chosen by request, then `pdf.preset`, then the selected preset.
+ * `mergeDocumentConfig` parses the front matter and returns the unknown-key
+ * warnings; {@link scanAssets} adds the asset references the print cannot
+ * resolve. Neither kind blocks the export.
  * @param request - `{ path, cwd?, sessionId?, preset?, page?, documentConfig?, owner? }`.
  * @param options - process-level renderer, pandoc, and an injectable job store.
  * @returns the job id, the printable URL, the finish token, print options, and warnings.
@@ -424,15 +426,6 @@ export async function prepareExport(request = {}, options = {}) {
 
   const { frontmatter } = splitFrontmatter(markdown)
   const fields = parseFrontmatter(frontmatter)
-  // Preset metadata arrives with the page settings task, so the lowest page
-  // layer is empty here; the merge still exercises the full precedence chain.
-  const merged = mergeDocumentConfig({
-    presetPage: {},
-    frontmatter: fields,
-    request: { page: request?.page, documentConfig: request?.documentConfig },
-  })
-  const page = merged.page
-  const warnings = merged.warnings
 
   const { selected } = await listPresets()
   const requestedPreset = typeof request?.preset === 'string' && request.preset !== '' ? request.preset : null
@@ -441,6 +434,17 @@ export async function prepareExport(request = {}, options = {}) {
     : null
   const presetId = requestedPreset ?? declaredPreset ?? selected
   const preset = await readPreset(presetId)
+
+  // The page layers, low to high: the preset's saved page metadata, the file's
+  // flat `pdf.page.*` front matter, and this request's explicit override. Only
+  // fields a layer sets participate, so a font-size-only override leaves the
+  // preset's own `@page` box in charge.
+  const merged = mergeDocumentConfig({
+    presetPage: preset.page ?? {},
+    frontmatter: fields,
+    request: { page: request?.page, documentConfig: request?.documentConfig },
+  })
+  const page = merged.page
 
   const rendered = await renderDocument({
     markdown,
@@ -451,6 +455,10 @@ export async function prepareExport(request = {}, options = {}) {
     pageCss: pageOverrideCss(page),
     renderer: request?.renderer ?? options.renderer,
   }, { pandocPath: options.pandocPath })
+
+  // Unknown `pdf.*` keys and unresolvable asset references are warnings: the
+  // PDF still prints, and the client reports what was skipped.
+  const warnings = [...merged.warnings, ...await scanAssets(rendered.html, directory)]
 
   const printOptions = {
     printBackground: true,

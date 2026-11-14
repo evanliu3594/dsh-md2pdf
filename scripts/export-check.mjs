@@ -131,6 +131,8 @@ const {
 } = await import('../src/export.js')
 const { createPrintJobs } = await import('../src/print-jobs.js')
 const { describeEngines, printBrowser } = await import('../src/pdf.js')
+const { savePresetPage } = await import('../src/presets.js')
+const { scanAssets } = await import('../src/asset-scan.js')
 
 const PDF = Buffer.from('%PDF-1.4\n%%EOF\n', 'latin1')
 const OTHER_PDF = Buffer.from('%PDF-1.5\n%%EOF\n', 'latin1')
@@ -163,6 +165,8 @@ try {
     /^http:\/\/127\.0\.0\.1:\d+\/p\/[0-9a-f]{64}\/document\.html$/.test(prepared.printUrl), true)
   expectEqual('prepare returns a finish token', /^[0-9a-f]{64}$/.test(prepared.finishToken), true)
   expectEqual('prepare returns a warnings list', Array.isArray(prepared.warnings), true)
+  expectEqual('prepare warns about an asset outside the source directory',
+    prepared.warnings.some(warning => warning.includes('icon.svg')), true)
   expectEqual('prepare does not open a preview', Object.hasOwn(prepared, 'previewAddress'), false)
 
   const margins = prepared.printOptions.margins
@@ -266,6 +270,30 @@ try {
 
   const rejectedPage = await capture(() => prepareExport({ path: source, page: { size: 'B5' } }))
   expectEqual('an invalid page override is refused', rejectedPage?.code, 'bad-request')
+  const unknownPageField = await capture(() => prepareExport({ path: source, page: { bleed: 3 } }))
+  expectEqual('an unknown request page field is refused', unknownPageField?.code, 'bad-request')
+
+  // Preset page metadata is the lowest explicit page layer. Only its explicit
+  // fields are emitted, so a font-size-only metadata leaves the preset's own
+  // @page box in charge; the gongwen margins must survive it.
+  await savePresetPage('paper', { marginMm: 20 })
+  const metadataPage = await prepareExport({ path: source, preset: 'paper' })
+  expectClose('preset page metadata sets the print margin', metadataPage.printOptions.margins.top, 0.7874)
+  const metadataHtml = await (await fetch(metadataPage.printUrl)).text()
+  expectEqual('preset page metadata reaches the page css',
+    metadataHtml.includes('@page{margin:20mm}'), true)
+  await finishExport({ finishToken: metadataPage.finishToken, pdfBytes: PDF })
+
+  await savePresetPage('gongwen', { fontSize: 12 })
+  const fontMetadata = await prepareExport({ path: source, preset: 'gongwen' })
+  expectClose('font-only preset page metadata keeps the gongwen margin',
+    fontMetadata.printOptions.margins.top, 1.4567)
+  const fontMetadataHtml = await (await fetch(fontMetadata.printUrl)).text()
+  expectEqual('font-only preset page metadata emits only the body size',
+    fontMetadataHtml.includes('body{font-size:12px}'), true)
+  expectEqual('font-only preset page metadata emits no page margin',
+    fontMetadataHtml.includes('@page{margin:20mm}'), false)
+  await finishExport({ finishToken: fontMetadata.finishToken, pdfBytes: PDF })
 
   // Flat `pdf.*` front matter configures the page and the preset. A request
   // preset outranks `pdf.preset`, which outranks the selected preset, and an
@@ -294,6 +322,22 @@ try {
     configuredHtml.includes('@page{size:A3 landscape;margin:30mm}'), true)
   expectEqual('front matter preset is honoured', configuredHtml.includes('sup.footnote-ref a'), true)
   await finishExport({ finishToken: configured.finishToken, pdfBytes: PDF })
+
+  // The request page is the highest layer: it outranks the file's front matter,
+  // which already outranks the preset metadata.
+  const requestPage = await prepareExport({
+    path: configuredSource,
+    preset: 'paper',
+    page: { marginMm: 20 },
+  })
+  expectClose('a request page outranks front matter', requestPage.printOptions.margins.top, 0.7874)
+  await finishExport({ finishToken: requestPage.finishToken, pdfBytes: PDF })
+
+  // A request page with one explicit field leaves the other layers alone.
+  const requestFont = await prepareExport({ path: source, page: { fontSize: 13 } })
+  expectClose('a font-size-only request keeps the preset page box',
+    requestFont.printOptions.margins.top, 0.7874)
+  await finishExport({ finishToken: requestFont.finishToken, pdfBytes: PDF })
 
   const overriding = await prepareExport({ path: configuredSource, preset: 'gongwen' })
   const overridingResponse = await fetch(overriding.printUrl)
@@ -363,6 +407,53 @@ try {
   expectEqual('a locked target is tried once plus three retries', attempts, 4)
   expectEqual('a locked target keeps the old pdf', (await readFile(busyTarget)).equals(PDF), true)
   expectEqual('a locked target leaves no staging file', await hasStagingFile(work), false)
+
+  // Asset scan: local references resolve under the source directory; a missing
+  // file, an escape, a remote URL, and an unsupported scheme are warnings. The
+  // export continues, so the caller can report them without failing the PDF.
+  await writeFile(join(work, 'present.png'), Buffer.from('89504e470d0a1a0a', 'hex'))
+  const assetWarnings = await scanAssets([
+    '<img src="present.png">',
+    '<img src="missing.png">',
+    '<img src="https://example.com/remote.png">',
+    '<img src="data:image/png;base64,AAAA">',
+    '<style>body { background: url(../outside.png) }</style>',
+    '<style>@font-face { font-family: X; src: url(missing.woff2) }</style>',
+  ].join(''), work)
+  expectEqual('a missing local asset is warned',
+    assetWarnings.some(warning => warning.includes('missing.png')), true)
+  expectEqual('a missing local font is warned',
+    assetWarnings.some(warning => warning.includes('missing.woff2')), true)
+  expectEqual('a remote asset is warned',
+    assetWarnings.some(warning => warning.includes('https://example.com/remote.png')), true)
+  expectEqual('an asset outside the root is warned',
+    assetWarnings.some(warning => warning.includes('../outside.png')), true)
+  expectEqual('a present asset is not warned',
+    assetWarnings.some(warning => warning.includes('present.png')), false)
+  expectEqual('a data url is not warned',
+    assetWarnings.some(warning => warning.includes('data:')), false)
+  await writeFile(join(work, '.secret.png'), Buffer.from('89504e47', 'hex'))
+  const dotWarning = await scanAssets('<img src=".secret.png">', work)
+  expectEqual('a dotfile asset is warned',
+    dotWarning.some(warning => warning.includes('.secret.png')), true)
+  const dotNavigation = await scanAssets('<img src="./present.png">', work)
+  expectEqual('ordinary ./ navigation is not warned',
+    dotNavigation.some(warning => warning.includes('present.png')), false)
+
+  // The print server rejects a symlink at any segment; the scan must agree.
+  const assetLink = join(work, 'asset-link.png')
+  let assetLinked = false
+  try {
+    await symlink(join(work, 'present.png'), assetLink, 'file')
+    assetLinked = true
+  } catch (error) {
+    if (!['EPERM', 'EACCES', 'ENOSYS'].includes(error?.code)) throw error
+  }
+  if (assetLinked) {
+    const linkedWarnings = await scanAssets('<img src="asset-link.png">', work)
+    expectEqual('an asset reached through a symlink is warned',
+      linkedWarnings.some(warning => warning.includes('asset-link.png')), true)
+  }
 
   // The browser fallback is still exported and reports only the browser engine.
   expectEqual('the browser printer is exported', typeof printBrowser, 'function')

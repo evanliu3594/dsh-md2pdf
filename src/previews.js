@@ -11,7 +11,7 @@
  * generated document and applied as body padding, which is what makes the
  * printed margins visible in the miniature.
  */
-import { pageMarginShorthand } from './page-css.js'
+import { pageMarginShorthand, pageOverrideCss } from './page-css.js'
 import { renderDocument } from './html-build.js'
 import { listPresets, readPreset } from './presets.js'
 
@@ -58,15 +58,24 @@ export function withPageFrame(html) {
 }
 
 /**
- * Build one preview document from a stylesheet.
+ * Build one preview document from a preset's stylesheet and page metadata.
+ *
+ * The page metadata is the same partial override the exporter appends, so the
+ * miniature shows the margin and font size the next export will use. Because
+ * the override is emitted after the preset sheet, the margin readback sees the
+ * effective box.
  * @param css - the preset's override layer.
+ * @param page - the preset's optional page override.
  * @returns a complete HTML document.
  */
-export async function previewHtml(css = '') {
+export async function previewHtml(css = '', page = {}) {
+  const override = page ?? {}
   const rendered = await renderDocument({
     markdown: PREVIEW_MARKDOWN,
     title: 'preview',
     themeCss: typeof css === 'string' ? css : '',
+    page: override,
+    pageCss: pageOverrideCss(override),
     // A preview must never wait on an external tool, so it always uses the
     // built-in renderer even when the exporter is configured for pandoc.
     renderer: 'builtin',
@@ -82,7 +91,8 @@ export async function buildPreviews() {
   const { selected, presets } = await listPresets()
   const built = {}
   for (const preset of presets) {
-    built[preset.id] = await previewHtml((await readPreset(preset.id)).css)
+    const stored = await readPreset(preset.id)
+    built[preset.id] = await previewHtml(stored.css, stored.page ?? {})
   }
   return { presets: built, selected }
 }

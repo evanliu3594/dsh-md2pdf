@@ -1,26 +1,32 @@
 /**
  * The preset store: one CSS file per preset plus one index that carries the
- * display order and the selected preset.
+ * display order, the selected preset, and optional page metadata.
  *
  * ```
  * $DSH_HOME/md2pdf/
- *   presets.json            { version, selected, presets: [{ id, name }] }
+ *   presets.json            { version, selected, presets: [{ id, name, description?, page? }] }
  *   presets/<id>.css        that preset's override layer
  * ```
  *
  * The index is the authority. Every write puts the CSS file down first and the
  * index second, so an interrupted write can leave an unreferenced file but
  * never an entry without a stylesheet.
+ *
+ * `page` is a partial page override: it contains only the fields the user
+ * saved, and its absence means the preset's own `@page` box is the authority.
+ * A version 1 index is rewritten as version 2 on its first read; its
+ * stylesheets are not touched.
  */
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
+import { validatePageOverride } from './document-config.js'
 import { PdfError } from './pdf.js'
 import { MAX_CSS_BYTES, settingsDirectory } from './settings.js'
 import { DEFAULT_THEME, THEMES, themeCss } from './themes.js'
 
 /** Index format written by this release. */
-export const PRESET_INDEX_VERSION = 1
+export const PRESET_INDEX_VERSION = 2
 
 /** Identifiers safe to place in a file name. */
 const PRESET_ID = /^[a-z0-9-]{1,64}$/
@@ -60,46 +66,110 @@ function builtinIds() {
 }
 
 /**
+ * Read a stored page override.
+ *
+ * The value is validated exactly like a request page, so a hand-edited invalid
+ * size or an out-of-range margin is refused instead of silently printing a
+ * different page box. An empty object is treated as absent: the index stores no
+ * page when the user has not saved page settings.
+ * @param raw - the stored `page` value.
+ * @param id - preset identifier, for the failure message.
+ * @returns the validated partial page, or undefined when absent or empty.
+ * @throws {PdfError} when a stored field is invalid.
+ */
+function storedPage(raw, id) {
+  if (raw === undefined || raw === null) return undefined
+  const page = validatePageOverride(raw, `presets.${id}.page`)
+  return Object.keys(page).length === 0 ? undefined : page
+}
+
+/**
  * Read the index from disk.
- * @returns the parsed index and whether the file exists but could not be used.
+ * @returns the parsed index, whether the file exists but could not be used, and
+ *   whether the parsed file must be rewritten in the current format.
  */
 async function readIndexFile() {
   let raw
   try {
     raw = await readFile(presetIndexPath(), 'utf8')
   } catch {
-    return { index: null, corrupt: false }
+    return { index: null, corrupt: false, migrate: false }
   }
+  let parsed
   try {
-    const parsed = JSON.parse(raw)
-    if (typeof parsed !== 'object' || parsed === null || !Array.isArray(parsed.presets)) {
-      return { index: null, corrupt: true }
-    }
-    return {
-      corrupt: false,
-      index: {
-        version: PRESET_INDEX_VERSION,
-        selected: typeof parsed.selected === 'string' ? parsed.selected : '',
-        presets: parsed.presets
-          .filter(entry => typeof entry?.id === 'string' && PRESET_ID.test(entry.id))
-          .map(entry => ({ id: entry.id, name: typeof entry.name === 'string' ? entry.name : entry.id })),
-      },
-    }
+    parsed = JSON.parse(raw)
   } catch {
-    return { index: null, corrupt: true }
+    return { index: null, corrupt: true, migrate: false }
+  }
+  if (typeof parsed !== 'object' || parsed === null || !Array.isArray(parsed.presets)) {
+    return { index: null, corrupt: true, migrate: false }
+  }
+  const previous = parsed.version !== PRESET_INDEX_VERSION
+  const presets = parsed.presets
+    .filter(entry => typeof entry?.id === 'string' && PRESET_ID.test(entry.id))
+    .map((entry) => {
+      const preset = {
+        id: entry.id,
+        name: typeof entry.name === 'string' ? entry.name : entry.id,
+      }
+      if (typeof entry.description === 'string') {
+        preset.description = entry.description
+      } else if (previous) {
+        // A version 1 entry has no description; the v2 format adds it.
+        preset.description = ''
+      }
+      const page = storedPage(entry.page, entry.id)
+      if (page !== undefined) preset.page = page
+      return preset
+    })
+  return {
+    corrupt: false,
+    migrate: previous,
+    index: {
+      version: PRESET_INDEX_VERSION,
+      selected: typeof parsed.selected === 'string' ? parsed.selected : '',
+      presets,
+    },
   }
 }
 
+/** Serializes index writes in this process; the staging name is shared. */
+let indexWriteQueue = Promise.resolve()
+
 /**
- * Write the index, replacing it in one rename.
+ * Write the index file, replacing it in one rename.
  * @param index - the complete index to store.
+ * @param directory - directory that holds the index.
+ * @param target - absolute index path.
+ * @param staging - fixed staging path beside the target.
  */
-async function writeIndex(index) {
-  await mkdir(settingsDirectory(), { recursive: true })
-  const target = presetIndexPath()
-  const staging = `${target}.tmp`
+async function writeIndexFile(index, directory, target, staging) {
+  await mkdir(directory, { recursive: true })
   await writeFile(staging, `${JSON.stringify(index, null, 2)}\n`, 'utf8')
   await rename(staging, target)
+}
+
+/**
+ * Queue one index write behind every earlier write.
+ *
+ * The staging path is one fixed name, so two concurrent writers would race on
+ * it: the first rename removes the staging file and the second rename then
+ * fails with ENOENT. Every caller writes a complete index, so serializing the
+ * writes preserves the last caller's state. The paths are fixed when the call
+ * is made, not when the queued write runs.
+ * @param index - the complete index to store.
+ * @returns a promise for this write.
+ */
+async function writeIndex(index) {
+  const directory = settingsDirectory()
+  const target = presetIndexPath()
+  const staging = `${target}.tmp`
+  const next = indexWriteQueue.then(
+    () => writeIndexFile(index, directory, target, staging),
+    () => writeIndexFile(index, directory, target, staging),
+  )
+  indexWriteQueue = next.then(() => undefined, () => undefined)
+  return next
 }
 
 /**
@@ -184,7 +254,12 @@ async function migrateLegacy(index) {
  */
 export async function ensurePresets() {
   const stored = await readIndexFile()
-  if (stored.index !== null && stored.index.presets.length > 0) return stored.index
+  if (stored.index !== null && stored.index.presets.length > 0) {
+    // The first read of a version 1 index writes the version 2 format back;
+    // only metadata changes, and `writeIndex` replaces the file in one rename.
+    if (stored.migrate) await writeIndex(stored.index)
+    return stored.index
+  }
   if (stored.corrupt) {
     // Keep the unusable file for inspection instead of overwriting it silently.
     await rename(presetIndexPath(), `${presetIndexPath()}.corrupt`).catch(() => {})
@@ -200,6 +275,9 @@ export async function ensurePresets() {
 
 /**
  * List every preset with the flags the settings page shows.
+ *
+ * Optional metadata is copied only when it exists, so an unset description or
+ * page stays absent from the response and the JSON body.
  * @returns the selected identifier and one entry per preset, in display order.
  */
 export async function listPresets() {
@@ -209,14 +287,17 @@ export async function listPresets() {
   for (const entry of index.presets) {
     const shipped = builtin.includes(entry.id)
     const unmodified = shipped && (await readPresetCss(entry.id)) === themeCss(entry.id)
-    presets.push({ id: entry.id, name: entry.name, builtin: shipped, unmodified })
+    const preset = { id: entry.id, name: entry.name, builtin: shipped, unmodified }
+    if (entry.description !== undefined) preset.description = entry.description
+    if (entry.page !== undefined) preset.page = { ...entry.page }
+    presets.push(preset)
   }
   const selected = presets.some(preset => preset.id === index.selected) ? index.selected : presets[0].id
   return { selected, presets }
 }
 
 /**
- * Read one preset's name and stylesheet.
+ * Read one preset's name, optional metadata, and stylesheet.
  * @param id - preset identifier.
  * @returns the preset.
  * @throws {PdfError} when the identifier is unknown.
@@ -225,7 +306,10 @@ export async function readPreset(id) {
   const index = await ensurePresets()
   const entry = index.presets.find(preset => preset.id === id)
   if (entry === undefined) throw new PdfError('not-found', `unknown preset: ${String(id)}`)
-  return { id: entry.id, name: entry.name, css: await readPresetCss(entry.id) }
+  const preset = { id: entry.id, name: entry.name, css: await readPresetCss(entry.id) }
+  if (entry.description !== undefined) preset.description = entry.description
+  if (entry.page !== undefined) preset.page = { ...entry.page }
+  return preset
 }
 
 /** A name conflict carries the id it collides with. */
@@ -291,9 +375,39 @@ export async function savePreset(input) {
   await writePresetCss(targetId, css)
   const presets = created
     ? [...index.presets, { id: targetId, name }]
-    : index.presets.map(preset => (preset.id === targetId ? { id: preset.id, name } : preset))
+    : index.presets.map(preset => (preset.id === targetId ? { ...preset, name } : preset))
   await writeIndex({ ...index, selected: targetId, presets })
   return { id: targetId, name, created }
+}
+
+/**
+ * Store or clear one preset's page metadata.
+ *
+ * The page is a partial override: only the fields in `page` are stored, and a
+ * field passed as `null` is ignored. An empty page, `null`, or `undefined`
+ * removes the metadata, which makes the preset's own `@page` box the
+ * authority again. A later save replaces the stored override; the settings
+ * page sends the complete set of fields that differ from the preset CSS.
+ * @param id - preset identifier.
+ * @param page - the page fields to store, or an empty value to clear.
+ * @returns the stored identifier and page, with `page` absent after clearing.
+ * @throws {PdfError} when the preset is unknown or a page field is invalid.
+ */
+export async function savePresetPage(id, page) {
+  const index = await ensurePresets()
+  if (!index.presets.some(preset => preset.id === id)) {
+    throw new PdfError('not-found', `unknown preset: ${String(id)}`)
+  }
+  const override = page === undefined || page === null ? {} : validatePageOverride(page, 'page')
+  const presets = index.presets.map((preset) => {
+    if (preset.id !== id) return preset
+    const next = { ...preset }
+    if (Object.keys(override).length === 0) delete next.page
+    else next.page = override
+    return next
+  })
+  await writeIndex({ ...index, presets })
+  return Object.keys(override).length === 0 ? { id } : { id, page: override }
 }
 
 /**
@@ -386,7 +500,7 @@ export { MAX_CSS_BYTES }
  *
  * The HTTP route parses a body and hands it here, so every operation the page
  * offers is reachable from a check without a server.
- * @param action - `{ action, id?, name?, css?, ids?, overwrite? }`.
+ * @param action - `{ action, id?, name?, css?, page?, ids?, overwrite? }`.
  * @returns the action's own result.
  * @throws {PdfError} for an unknown action or a refused operation.
  */
@@ -399,6 +513,8 @@ export async function runPresetAction(action) {
       return selectPreset(action.id)
     case 'save':
       return savePreset({ id: action.id, name: action.name, css: action.css, overwrite: action.overwrite })
+    case 'save-page':
+      return savePresetPage(action.id, action.page)
     case 'order':
       return orderPresets(action.ids)
     case 'delete':

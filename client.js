@@ -54,6 +54,12 @@ window.__ModuleLoader__.load({
     const PREVIEW_WIDTH = 552
     const PREVIEW_HEIGHT = 224
 
+    /** Page values the Host accepts; mirrors src/document-config.js. */
+    const PAGE_SIZES = ['A3', 'A4', 'A5', 'Letter', 'Legal']
+    const PAGE_DEFAULTS = { size: 'A4', marginMm: 18, fontSize: 15, landscape: false }
+    const PAGE_MARGIN_RANGE = { min: 0, max: 60 }
+    const PAGE_FONT_RANGE = { min: 8, max: 24 }
+
     /** Source suffixes this plugin exports. */
     const MARKDOWN_PATTERN = /\.(md|markdown|mdown|mkd|mdwn|mdx)$/i
 
@@ -91,6 +97,23 @@ window.__ModuleLoader__.load({
         'settings.engineDsh': 'DSH built-in',
         'settings.engineBrowser': '{name} (browser fallback)',
         'settings.engineNone': 'none',
+        'settings.pageHeading': 'Page',
+        'settings.pageHint': 'The page box for the preset in use. Only fields you change are stored; an empty field keeps the preset stylesheet in charge.',
+        'settings.pageSize': 'Paper size',
+        'settings.pageOrientation': 'Orientation',
+        'settings.pageMargin': 'Margin (mm)',
+        'settings.pageFontSize': 'Body font size (px)',
+        'settings.pageDefault': 'Preset default',
+        'settings.pagePortrait': 'Portrait',
+        'settings.pageLandscape': 'Landscape',
+        'settings.pageSave': 'Save page',
+        'settings.pageReset': 'Reset page',
+        'settings.pageSaved': 'Page settings saved.',
+        'settings.pageResetDone': 'Page settings reset.',
+        'settings.pageSaveFailed': 'Could not save page settings: {message}',
+        'settings.pageResetFailed': 'Could not reset page settings: {message}',
+        'settings.pageInvalid': 'Page settings are out of range.',
+        'settings.pageUnsupported': 'This preset uses an unsupported @page form ({detail}); printing uses one uniform page box.',
         'settings.presetLabel': 'Presets',
         'settings.selected': 'In use: {name}',
         'settings.editing': 'Editing: {name}',
@@ -158,6 +181,23 @@ window.__ModuleLoader__.load({
         'settings.engineDsh': 'DSH 内置',
         'settings.engineBrowser': '{name}（浏览器回退）',
         'settings.engineNone': '无',
+        'settings.pageHeading': '页面',
+        'settings.pageHint': '当前预设的页面设置。只保存你改动过的字段；留空的字段由预设样式决定。',
+        'settings.pageSize': '纸张',
+        'settings.pageOrientation': '方向',
+        'settings.pageMargin': '页边距（mm）',
+        'settings.pageFontSize': '正文字号（px）',
+        'settings.pageDefault': '预设默认',
+        'settings.pagePortrait': '纵向',
+        'settings.pageLandscape': '横向',
+        'settings.pageSave': '保存页面',
+        'settings.pageReset': '重置页面',
+        'settings.pageSaved': '页面设置已保存。',
+        'settings.pageResetDone': '页面设置已重置。',
+        'settings.pageSaveFailed': '保存页面设置失败：{message}',
+        'settings.pageResetFailed': '重置页面设置失败：{message}',
+        'settings.pageInvalid': '页面设置的取值超出范围。',
+        'settings.pageUnsupported': '此预设使用了不支持的 @page 写法（{detail}）；打印按统一页框处理。',
         'settings.presetLabel': '版式预设',
         'settings.selected': '当前使用：{name}',
         'settings.editing': '正在编辑：{name}',
@@ -225,6 +265,196 @@ window.__ModuleLoader__.load({
     /** Whether one path names a markdown source. */
     function isMarkdownPath(path) {
       return typeof path === 'string' && MARKDOWN_PATTERN.test(path)
+    }
+
+    /** One CSS length in millimetres, or null for an unsupported unit. */
+    function lengthInMm(text) {
+      const match = /^(\d+(?:\.\d+)?|\.\d+)(mm|cm|in|pt|px)$/i.exec(String(text).trim())
+      if (match === null) return null
+      const unit = match[2].toLowerCase()
+      const factor = unit === 'mm'
+        ? 1
+        : unit === 'cm'
+          ? 10
+          : unit === 'in'
+            ? 25.4
+            : unit === 'pt' ? 25.4 / 72 : 25.4 / 96
+      return Math.round(Number.parseFloat(match[1]) * factor * 100) / 100
+    }
+
+    /** The declarations of the last @page block, or null. */
+    function lastPageDeclarations(css) {
+      let block = null
+      const pattern = /@page\b[^{]*\{([^}]*)\}/gi
+      for (const match of String(css ?? '').matchAll(pattern)) block = match[1]
+      return block
+    }
+
+    /**
+     * Read the paper size and orientation a preset stylesheet declares.
+     * A declared value the form cannot represent stays null.
+     */
+    function presetPageBox(css) {
+      const declarations = lastPageDeclarations(css)
+      const box = { declared: false, size: null, landscape: null }
+      if (declarations === null) return box
+      const match = /(?:^|;)\s*size\s*:\s*([^;]+)/i.exec(declarations)
+      if (match === null) return box
+      box.declared = true
+      for (const token of match[1].trim().split(/\s+/)) {
+        const size = PAGE_SIZES.find(known => known.toLowerCase() === token.toLowerCase())
+        if (size !== undefined) box.size = size
+        if (/^landscape$/i.test(token)) box.landscape = true
+        if (/^portrait$/i.test(token)) box.landscape = false
+      }
+      return box
+    }
+
+    /**
+     * Read the uniform page margin a preset stylesheet declares.
+     * A non-uniform shorthand is a real page box the single margin field cannot
+     * represent, so it reports null instead of one of its sides.
+     */
+    function presetMargin(css) {
+      const declarations = lastPageDeclarations(css)
+      if (declarations === null) return { declared: false, mm: null }
+      const match = /(?:^|;)\s*margin\s*:\s*([^;]+)/i.exec(declarations)
+      if (match === null) return { declared: false, mm: null }
+      const values = match[1].trim().split(/\s+/).map(lengthInMm)
+      if (values.length < 1 || values.length > 4 || values.some(value => value === null)) {
+        return { declared: true, mm: null }
+      }
+      return { declared: true, mm: values.every(value => value === values[0]) ? values[0] : null }
+    }
+
+    /** Read the root body font size a preset stylesheet declares, in px. */
+    function presetFontSize(css) {
+      const text = String(css ?? '')
+      const rule = /([^{}]+)\{([^{}]*)\}/g
+      let result = { declared: false, px: null }
+      for (const match of text.matchAll(rule)) {
+        const selector = match[1].trim()
+        if (!selector.split(',').some(part => part.trim().toLowerCase() === 'body')) continue
+        const size = /(?:^|;)\s*font-size\s*:\s*([^;]+)/i.exec(match[2])
+        if (size === null) continue
+        const token = size[1].trim()
+        const px = /^(\d+(?:\.\d+)?|\.\d+)px$/i.exec(token)
+        const pt = /^(\d+(?:\.\d+)?|\.\d+)pt$/i.exec(token)
+        const mm = /^(\d+(?:\.\d+)?|\.\d+)mm$/i.exec(token)
+        if (px !== null) {
+          result = { declared: true, px: Math.round(Number.parseFloat(px[1]) * 10) / 10 }
+        } else if (pt !== null) {
+          result = { declared: true, px: Math.round((Number.parseFloat(pt[1]) * 4 / 3) * 10) / 10 }
+        } else if (mm !== null) {
+          result = { declared: true, px: Math.round((Number.parseFloat(mm[1]) * 96 / 25.4) * 10) / 10 }
+        } else {
+          result = { declared: true, px: null }
+        }
+      }
+      return result
+    }
+
+    /**
+     * Resolve the values the preset stylesheet alone produces. A null field
+     * means the stylesheet declares a value the single-field form cannot
+     * represent; the plugin's base sheet supplies the rest.
+     */
+    function basePageOf(css) {
+      const box = presetPageBox(css)
+      const margin = presetMargin(css)
+      const font = presetFontSize(css)
+      const size = box.declared ? box.size : PAGE_DEFAULTS.size
+      const landscape = box.landscape !== null
+        ? box.landscape
+        : box.declared && box.size === null ? null : PAGE_DEFAULTS.landscape
+      return {
+        size,
+        marginMm: margin.declared ? margin.mm : PAGE_DEFAULTS.marginMm,
+        fontSize: font.declared ? font.px : PAGE_DEFAULTS.fontSize,
+        landscape,
+      }
+    }
+
+    /**
+     * Resolve the values the page form shows: saved metadata first, then the
+     * preset stylesheet. The stylesheet-only values stay the comparison base
+     * for saving, so re-saving an existing override does not drop it.
+     */
+    function effectivePageOf(css, stored) {
+      const base = basePageOf(css)
+      const saved = stored !== null && typeof stored === 'object' ? stored : {}
+      return {
+        size: typeof saved.size === 'string' ? saved.size : base.size,
+        marginMm: typeof saved.marginMm === 'number' ? saved.marginMm : base.marginMm,
+        fontSize: typeof saved.fontSize === 'number' ? saved.fontSize : base.fontSize,
+        landscape: typeof saved.landscape === 'boolean' ? saved.landscape : base.landscape,
+      }
+    }
+
+    /** Turn an effective page into the strings the form fields hold. */
+    function pageFormOf(page) {
+      return {
+        size: page.size === null ? '' : page.size,
+        landscape: page.landscape === null ? '' : page.landscape ? 'landscape' : 'portrait',
+        marginMm: page.marginMm === null ? '' : String(page.marginMm),
+        fontSize: page.fontSize === null ? '' : String(page.fontSize),
+      }
+    }
+
+    /**
+     * Build the page override to store from the current form.
+     *
+     * Only fields that differ from what the preset already produces are sent,
+     * so changing the font size never writes a default margin over a gongwen
+     * 37/26/35/28 mm page box.
+     */
+    function pageOverrideOf(draft, base) {
+      const page = {}
+      if (draft.size !== '' && draft.size !== base.size) page.size = draft.size
+      const orientation = draft.landscape === 'landscape'
+        ? true
+        : draft.landscape === 'portrait' ? false : null
+      if (orientation !== null && orientation !== base.landscape) page.landscape = orientation
+      if (draft.marginMm !== '') {
+        const margin = Number(draft.marginMm)
+        if (Number.isFinite(margin) && margin !== base.marginMm) page.marginMm = margin
+      }
+      if (draft.fontSize !== '') {
+        const font = Number(draft.fontSize)
+        if (Number.isFinite(font) && font !== base.fontSize) page.fontSize = font
+      }
+      return page
+    }
+
+    /** Whether a form value is outside the range the Host accepts. */
+    function pageDraftInvalid(draft) {
+      const margin = draft.marginMm === '' ? null : Number(draft.marginMm)
+      if (margin !== null
+        && (!Number.isFinite(margin) || margin < PAGE_MARGIN_RANGE.min || margin > PAGE_MARGIN_RANGE.max)) {
+        return true
+      }
+      const font = draft.fontSize === '' ? null : Number(draft.fontSize)
+      return font !== null
+        && (!Number.isFinite(font) || font < PAGE_FONT_RANGE.min || font > PAGE_FONT_RANGE.max)
+    }
+
+    /**
+     * Name the @page forms the unified page box cannot honour.
+     *
+     * v2 prints one page box. Pseudo pages and named pages cannot be expressed,
+     * and longhand margins or `!important` inside the block cannot be folded
+     * into the single `size`/`margin` pair.
+     */
+    function unsupportedPageForms(css) {
+      const forms = new Set()
+      const pattern = /@page\b([^{]*)\{([^}]*)\}/gi
+      for (const match of String(css ?? '').matchAll(pattern)) {
+        const selector = match[1].trim()
+        if (selector !== '') forms.add(`@page ${selector}`)
+        if (/\bmargin-(?:top|right|bottom|left)\s*:/i.test(match[2])) forms.add('margin longhand')
+        if (/!important/i.test(match[2])) forms.add('!important')
+      }
+      return [...forms]
     }
 
     /** Candidate URLs for one Host route: document-relative first, then root. */
@@ -893,6 +1123,27 @@ window.__ModuleLoader__.load({
   tab-size: 2;
 }
 .md2pdf-field:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #2f6fa8); outline-offset: 1px; }
+.md2pdf-page-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+.md2pdf-page-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.md2pdf-page-label { font-size: 12px; line-height: 1.3; color: var(--dsw-alias-label-secondary, #6b7280); }
+.md2pdf-input {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid var(--dsw-alias-border-l2, #d7dce3);
+  background: var(--dsw-alias-bg-layer-1, #fff);
+  color: var(--dsw-alias-label-primary, #1c1f23);
+  font: inherit;
+  font-size: 13px;
+}
+.md2pdf-input:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #2f6fa8); outline-offset: 1px; }
+.md2pdf-warn { margin: 0; font-size: 12px; line-height: 1.6; color: var(--dsw-alias-state-warn-primary, #b45309); }
 .md2pdf-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .md2pdf-btn {
   font: inherit;
@@ -959,6 +1210,13 @@ window.__ModuleLoader__.load({
             },
           })
           : null)
+    }
+
+    /** One labelled control in the page settings form. */
+    function PageField({ label, children }) {
+      return h('label', { className: 'md2pdf-page-field' },
+        h('span', { className: 'md2pdf-page-label' }, label),
+        children)
     }
 
     /** Pencil glyph for a card's edit bar. */
@@ -1365,6 +1623,20 @@ window.__ModuleLoader__.load({
           const [engine, setEngine] = React.useState(null)
           const [busy, setBusy] = React.useState(false)
           const [dialog, setDialog] = React.useState(null)
+          const [selectedCss, setSelectedCss] = React.useState('')
+          const [pageBaseline, setPageBaseline] = React.useState({
+            size: PAGE_DEFAULTS.size,
+            marginMm: PAGE_DEFAULTS.marginMm,
+            fontSize: PAGE_DEFAULTS.fontSize,
+            landscape: PAGE_DEFAULTS.landscape,
+          })
+          const [pageDraft, setPageDraft] = React.useState(pageFormOf({
+            size: PAGE_DEFAULTS.size,
+            marginMm: PAGE_DEFAULTS.marginMm,
+            fontSize: PAGE_DEFAULTS.fontSize,
+            landscape: PAGE_DEFAULTS.landscape,
+          }))
+          const [pageBusy, setPageBusy] = React.useState(false)
 
           const nameOf = React.useCallback((id) => {
             const found = presets.find(preset => preset.id === id)
@@ -1391,6 +1663,23 @@ window.__ModuleLoader__.load({
             return payload
           }, [])
 
+          /**
+           * Show the selected preset's effective page values: saved metadata
+           * first, then the preset stylesheet, then the plugin defaults.
+           */
+          const applyPageState = React.useCallback((payload) => {
+            const current = Array.isArray(payload.presets)
+              ? payload.presets.find(preset => preset.id === payload.selected)
+              : undefined
+            const cssText = typeof payload.css === 'string' ? payload.css : ''
+            // The baseline is the stylesheet alone: it is what a field must
+            // differ from before it is stored, so saving an unchanged form
+            // does not clear an override the form is merely displaying.
+            setPageBaseline(basePageOf(cssText))
+            setPageDraft(pageFormOf(effectivePageOf(cssText, current === undefined ? undefined : current.page)))
+            setSelectedCss(cssText)
+          }, [])
+
           /** Reload the library and put the selected preset back in the editor. */
           const load = React.useCallback(async () => {
             setPhase('loading')
@@ -1403,6 +1692,7 @@ window.__ModuleLoader__.load({
                 setName(current === undefined ? '' : current.name)
                 setCss(typeof payload.css === 'string' ? payload.css : '')
                 setSavedCss(typeof payload.css === 'string' ? payload.css : '')
+                applyPageState(payload)
                 setStatus(null)
                 setPhase('ready')
                 return
@@ -1415,7 +1705,7 @@ window.__ModuleLoader__.load({
             }
             setPhase('error')
             setStatus({ kind: 'error', text: t('settings.loadFailed', { message: messageOf(lastError) }) })
-          }, [refresh])
+          }, [refresh, applyPageState])
 
           const loadPreviews = React.useCallback(async () => {
             try {
@@ -1578,6 +1868,41 @@ window.__ModuleLoader__.load({
             }
           }, [act, load, loadPreviews, fail])
 
+          /**
+           * Save one page override on the selected preset. The refresh after the
+           * write updates the form baseline without discarding unsaved CSS.
+           */
+          const writePage = React.useCallback(async (page, doneKey, failedKey) => {
+            if (selected === '') return
+            setPageBusy(true)
+            try {
+              await act({ action: 'save-page', id: selected, page })
+              const payload = await refresh()
+              applyPageState(payload)
+              await loadPreviews()
+              setStatus({ kind: 'ok', text: t(doneKey) })
+            } catch (error) {
+              fail(failedKey, error)
+            } finally {
+              setPageBusy(false)
+            }
+          }, [act, applyPageState, fail, loadPreviews, refresh, selected])
+
+          /** Store only the page fields that differ from the preset's own box. */
+          const submitPage = React.useCallback(() => {
+            if (pageDraftInvalid(pageDraft)) {
+              setStatus({ kind: 'error', text: t('settings.pageInvalid') })
+              return
+            }
+            writePage(pageOverrideOf(pageDraft, pageBaseline),
+              'settings.pageSaved', 'settings.pageSaveFailed')
+          }, [pageBaseline, pageDraft, writePage])
+
+          /** Remove the preset's page metadata; its stylesheet decides again. */
+          const resetPage = React.useCallback(() => {
+            writePage({}, 'settings.pageResetDone', 'settings.pageResetFailed')
+          }, [writePage])
+
           const startNewPreset = React.useCallback(() => {
             setEditingId(null)
             setName('')
@@ -1588,6 +1913,8 @@ window.__ModuleLoader__.load({
 
           const dirty = css !== savedCss
           const missingBuiltin = builtins.some(id => !presets.some(preset => preset.id === id))
+          const pageCssSource = editingId === selected ? css : selectedCss
+          const pageForms = unsupportedPageForms(pageCssSource)
           const editingLabel = editingId === null ? t('settings.editingNew') : t('settings.editing', { name })
           const engineText = engine === null
             ? t('settings.engineChecking')
@@ -1651,6 +1978,83 @@ window.__ModuleLoader__.load({
             }, h(TrashGlyph, null))))))
             rows.push(h('p', { key: 'current', className: 'md2pdf-hint' },
               t('settings.selected', { name: nameOf(selected) })))
+          }
+
+          rows.push(h('h3', { key: 'page-heading', className: 'md2pdf-heading' }, t('settings.pageHeading')))
+          rows.push(h('p', { key: 'page-hint', className: 'md2pdf-hint' }, t('settings.pageHint')))
+          rows.push(h('div', { key: 'page-form', className: 'md2pdf-page-form', 'data-md2pdf': 'page-form' },
+            h(PageField, { key: 'size', label: t('settings.pageSize') },
+              h('select', {
+                className: 'md2pdf-input',
+                value: pageDraft.size,
+                'data-md2pdf': 'page-size',
+                'aria-label': t('settings.pageSize'),
+                onChange: (event) => { setPageDraft(draft => ({ ...draft, size: event.target.value })) },
+              }, [
+                h('option', { key: 'default', value: '' }, t('settings.pageDefault')),
+                ...PAGE_SIZES.map(size => h('option', { key: size, value: size }, size)),
+              ])),
+            h(PageField, { key: 'orientation', label: t('settings.pageOrientation') },
+              h('select', {
+                className: 'md2pdf-input',
+                value: pageDraft.landscape,
+                'data-md2pdf': 'page-orientation',
+                'aria-label': t('settings.pageOrientation'),
+                onChange: (event) => { setPageDraft(draft => ({ ...draft, landscape: event.target.value })) },
+              }, [
+                h('option', { key: 'default', value: '' }, t('settings.pageDefault')),
+                h('option', { key: 'portrait', value: 'portrait' }, t('settings.pagePortrait')),
+                h('option', { key: 'landscape', value: 'landscape' }, t('settings.pageLandscape')),
+              ])),
+            h(PageField, { key: 'margin', label: t('settings.pageMargin') },
+              h('input', {
+                type: 'number',
+                className: 'md2pdf-input',
+                min: PAGE_MARGIN_RANGE.min,
+                max: PAGE_MARGIN_RANGE.max,
+                step: '0.5',
+                value: pageDraft.marginMm,
+                placeholder: t('settings.pageDefault'),
+                'data-md2pdf': 'page-margin',
+                'aria-label': t('settings.pageMargin'),
+                onChange: (event) => { setPageDraft(draft => ({ ...draft, marginMm: event.target.value })) },
+              })),
+            h(PageField, { key: 'font', label: t('settings.pageFontSize') },
+              h('input', {
+                type: 'number',
+                className: 'md2pdf-input',
+                min: PAGE_FONT_RANGE.min,
+                max: PAGE_FONT_RANGE.max,
+                step: '0.5',
+                value: pageDraft.fontSize,
+                placeholder: t('settings.pageDefault'),
+                'data-md2pdf': 'page-font',
+                'aria-label': t('settings.pageFontSize'),
+                onChange: (event) => { setPageDraft(draft => ({ ...draft, fontSize: event.target.value })) },
+              }))))
+          rows.push(h('div', { key: 'page-actions', className: 'md2pdf-row' },
+            h('button', {
+              type: 'button',
+              className: 'md2pdf-btn',
+              'data-tone': 'primary',
+              'data-md2pdf-action': 'save-page',
+              disabled: pageBusy || phase === 'loading' || selected === '',
+              onClick: submitPage,
+            }, t('settings.pageSave')),
+            h('button', {
+              type: 'button',
+              className: 'md2pdf-btn',
+              'data-md2pdf-action': 'reset-page',
+              disabled: pageBusy || phase === 'loading' || selected === '',
+              onClick: resetPage,
+            }, t('settings.pageReset'))))
+          if (pageForms.length > 0) {
+            rows.push(h('p', {
+              key: 'page-warning',
+              className: 'md2pdf-warn',
+              'data-md2pdf': 'page-warning',
+              role: 'status',
+            }, t('settings.pageUnsupported', { detail: pageForms.join(', ') })))
           }
 
           rows.push(h('div', { key: 'editor-head', className: 'md2pdf-row' },

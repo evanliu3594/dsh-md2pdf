@@ -154,15 +154,24 @@ function copyPageOverride(source) {
 }
 
 /**
- * Validate a page override arriving from a request.
+ * Validate a page override arriving from a request or stored preset metadata.
+ *
+ * Only fields a caller explicitly set appear in the result. Unknown fields are
+ * refused rather than ignored: a typo in a page key would otherwise print the
+ * previous geometry without telling anyone.
  * @param source - request page object.
  * @param label - dotted prefix for failure messages.
  * @returns a new validated partial page object.
  * @throws {PdfError} when the object or a field is invalid.
  */
-function validatePageOverride(source, label) {
+export function validatePageOverride(source, label) {
   if (source === null || typeof source !== 'object' || Array.isArray(source)) {
     throw new PdfError('bad-request', `${label} must be an object`)
+  }
+  for (const field of Object.keys(source)) {
+    if (!PAGE_FIELDS.includes(field)) {
+      throw new PdfError('bad-request', `${label}.${field} is not a page field`)
+    }
   }
   const page = emptyPage()
   for (const field of PAGE_FIELDS) {
