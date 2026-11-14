@@ -26,6 +26,7 @@ import { mergeDocumentConfig } from './document-config.js'
 import { DEFAULT_PAGE } from './document.js'
 import { baseHrefOf, renderDocument } from './html-build.js'
 import { parseFrontmatter, splitFrontmatter } from './markdown.js'
+import { openPath } from './opener.js'
 import { pageMarginsInches, pageOverrideCss } from './page-css.js'
 import { describeEngines, PdfError, printBrowser, verifyPdf } from './pdf.js'
 import { createPrintJobs } from './print-jobs.js'
@@ -350,18 +351,48 @@ function serializeFinish(jobId, work) {
 }
 
 /**
+ * Run the configured post-export action on a committed result.
+ *
+ * Only a UI job reaches this: the agent tool's jobs never open anything. The
+ * first successful finish records the attempt on the result, so a replay of the
+ * same token does not open the PDF twice. An opener failure is recorded on the
+ * result and never changes the committed outcome; the PDF is already in place.
+ * @param job - the print job behind the result.
+ * @param committed - the result the store committed.
+ * @param options - row configuration plus the injectable opener.
+ * @returns the same result, with an `open` record when the system action ran.
+ */
+async function applyAfterExport(job, committed, options) {
+  if (afterExportMode(options.afterExport) !== 'system') return committed
+  if (job.owner !== 'ui') return committed
+  // The store keeps one result object per finished job; a replay returns that
+  // same object. The marker makes the open attempt happen exactly once.
+  if (Object.hasOwn(committed, 'open')) return committed
+  const open = typeof options.open === 'function' ? options.open : openPath
+  try {
+    await open(job.targetPath)
+    committed.open = { mode: 'system', ok: true }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    committed.open = { mode: 'system', ok: false, code: 'open-failed', message }
+  }
+  return committed
+}
+
+/**
  * Commit one PDF payload for an open job.
  * @param job - the print job.
  * @param finishToken - the job's finish secret.
  * @param pdfBytes - bytes returned by the DSH client.
  * @param jobs - the job store that owns the job.
+ * @param options - row configuration and the injectable opener.
  * @returns the committed result.
  */
-async function commitFinish(job, finishToken, pdfBytes, jobs) {
+async function commitFinish(job, finishToken, pdfBytes, jobs, options) {
   // A job the store already ended is answered by the store, so the refusal
   // codes and the idempotent retry stay exactly Task 2's contract.
   if (job.state !== 'prepared' && job.state !== 'claimed' && job.state !== 'printing') {
-    return jobs.finish(finishToken, pdfBytes)
+    return applyAfterExport(job, jobs.finish(finishToken, pdfBytes), options)
   }
 
   const verified = verifyPdf(pdfBytes)
@@ -398,7 +429,7 @@ async function commitFinish(job, finishToken, pdfBytes, jobs) {
   if (typeof job.sessionId === 'string' && job.sessionId !== '' && await isReadable(job.targetPath)) {
     committed.previewAddress = sessionFileAddress(job.sessionId, job.targetPath)
   }
-  return committed
+  return applyAfterExport(job, committed, options)
 }
 
 /**
@@ -519,8 +550,10 @@ export async function prepareExport(request = {}, options = {}) {
  * different bytes after a commit are refused with `finish-conflict`. The print
  * server closes on success, on refusal, and on an expired job.
  * @param input - `{ finishToken, pdfBytes }`.
- * @param options - an injectable job store.
- * @returns the export result, including the viewer address when one is usable.
+ * @param options - row configuration (`afterExport`), an injectable job store,
+ *   and an injectable opener for the checks.
+ * @returns the export result, including the viewer address when one is usable
+ *   and the system-open record when `afterExport` is `system`.
  * @throws {PdfError} for an unknown token, an invalid payload, a locked or
  *   symlinked target, a conflict, or an expired job.
  */
@@ -540,12 +573,56 @@ export async function finishExport({ finishToken, pdfBytes } = {}, options = {})
   const entry = printServers.get(job.id)
   if (entry !== undefined) clearTimeout(entry.timer)
   try {
-    return await serializeFinish(job.id, () => commitFinish(job, finishToken, pdfBytes, jobs))
+    return await serializeFinish(job.id, () => commitFinish(job, finishToken, pdfBytes, jobs, options))
   } catch (error) {
     throw exportFailure(error)
   } finally {
     await closePrintServer(job.id)
   }
+}
+
+/**
+ * Open the committed target of one finished print job with the system opener.
+ *
+ * The client sends only the finish token; the path comes from the Host's job
+ * record, so a caller cannot choose which file opens. Only a finished UI job
+ * may be opened: a failed, expired, or still-open job and a tool job are
+ * refused before the opener runs. The open failure is a separate refusal: the
+ * PDF is already committed, and this action does not change that.
+ * @param input - `{ finishToken }`.
+ * @param options - an injectable job store and opener, for the checks.
+ * @returns `{ ok: true }` after the opener has been started.
+ * @throws {PdfError} for a missing or foreign token, an uncommitted job, or a
+ *   launcher that cannot start.
+ */
+export async function openFinishedExport({ finishToken } = {}, options = {}) {
+  if (typeof finishToken !== 'string' || finishToken.trim() === '') {
+    throw new PdfError('bad-request', 'finishToken is required')
+  }
+  const token = finishToken.trim()
+  const jobs = options.jobs ?? defaultJobs
+  const job = jobs.get(token)
+  if (job === null) throw new PdfError('bad-request', 'unknown finish token')
+  // `get` also matches the asset token and the job id; only the finish secret
+  // may resolve the target. The refusal precedes the opener, so another token
+  // never opens anything.
+  if (job.finishToken !== token) throw new PdfError('bad-request', 'invalid finish token')
+  if (job.state !== 'finished') {
+    throw new PdfError('state-conflict', 'this print job has not committed a PDF')
+  }
+  // The agent tool's jobs never open anything; the system fallback belongs to
+  // the UI export only.
+  if (job.owner !== 'ui') {
+    throw new PdfError('bad-request', 'only UI jobs may open the system fallback')
+  }
+  const open = typeof options.open === 'function' ? options.open : openPath
+  try {
+    await open(job.targetPath)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new PdfError('open-failed', message)
+  }
+  return { ok: true }
 }
 
 /**

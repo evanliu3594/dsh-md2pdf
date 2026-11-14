@@ -470,7 +470,9 @@ ctx.sidebarRight.openResource(result.previewAddress)
 - `system`：用系统默认程序打开（现有 `openPath`）。
 - `none`：只提示路径。
 
-Host 在 `finish` 前检查目标文件可读；可读时才返回 `previewAddress`。`openResource` 返回 void，查看器后续加载失败由 DSH 显示；插件回退系统打开。
+成功 `finish` 后，Host 对 UI 任务执行 `afterExport`：`system` 由 Host 调 `openPath`。打开失败记在结果的 `open` 字段，写盘仍算成功。工具任务不执行 `afterExport`。
+
+Host 在 `finish` 前检查目标文件可读；可读时才返回 `previewAddress`。`openResource` 返回 void，查看器后续加载失败由 DSH 显示。查看器、地址缺失或 `openResource` 同步抛错时，Client 用 `finishToken` 调 `/md2pdf/open`，由 Host 解析已提交目标后回退系统打开。
 
 v2 不自动刷新已经打开的 PDF。重新导出后，用户关闭再打开该标签；自动刷新留给后续版本。PDF 在会话工作区外时，预览可能被文件访问策略拒绝；此时回退系统打开，并提示原因。`ctx.sidebarRight` 不可用时同样回退系统打开。
 
@@ -511,12 +513,13 @@ document.fonts.check('16px "Family"', 'A')
 | `/md2pdf/export` | POST | 浏览器回退导出；agent 工具无客户端时使用 |
 | `/md2pdf/prepare` | POST | 渲染并创建打印任务 |
 | `/md2pdf/finish` | POST | 接收 PDF 字节并写盘 |
+| `/md2pdf/open` | POST | 用系统默认程序打开已完成 UI 任务的 PDF |
 | `/md2pdf/print-jobs/next` | GET | 客户端长轮询取任务 |
 | `/md2pdf/settings` | GET | 预设库、选中 CSS |
 | `/md2pdf/presets` | POST | 预设动作 |
 | `/md2pdf/previews` | GET | 缩略图页面 |
 
-每条路由先调用 `ctx.connection.requestRejection()`。`finish` 额外校验 `finishToken`；`print-jobs/next` 只返回未认领任务，客户端每次轮询由 connection fence 鉴权；`finish` 只接受 `application/pdf`，上限 64 MiB。
+每条路由先调用 `ctx.connection.requestRejection()`。`finish` 额外校验 `finishToken`；`open` 只接受 `finishToken`，只服务 UI 任务，目标由 Host 从任务解析，客户端不传路径、任务 id 或 URL；`print-jobs/next` 只返回未认领任务，客户端每次轮询由 connection fence 鉴权；`finish` 只接受 `application/pdf`，上限 64 MiB。
 
 `prepare` 请求体：`{ path, sessionId?, preset?, page?, documentConfig? }`。`sessionId` 用于计算 `previewAddress`；没有它时不返回预览地址。`documentConfig` 只来自本次 UI 覆盖，不写回源文件。
 

@@ -23,7 +23,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node scripts/render-check.mjs && node scripts/document-config-check.mjs && node scripts/presets-check.mjs && node scripts/preview-check.mjs && node scripts/dsh-preview-check.mjs && node scripts/printer-check.mjs && node scripts/print-server-check.mjs && node scripts/print-jobs-check.mjs && node scripts/export-check.mjs",
+    "test": "node scripts/render-check.mjs && node scripts/document-config-check.mjs && node scripts/presets-check.mjs && node scripts/preview-check.mjs && node scripts/dsh-preview-check.mjs && node scripts/printer-check.mjs && node scripts/print-server-check.mjs && node scripts/print-jobs-check.mjs && node scripts/export-check.mjs && node scripts/after-export-check.mjs",
     "test:audit": "node scripts/list-audit.mjs",
     "diagnose": "node scripts/diagnose-lists.mjs",
     "export": "node scripts/export-cli.mjs"

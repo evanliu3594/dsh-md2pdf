@@ -21,6 +21,7 @@ window.__ModuleLoader__.load({
     const EXPORT_ROUTE = 'md2pdf/export'
     const PREPARE_ROUTE = 'md2pdf/prepare'
     const FINISH_ROUTE = 'md2pdf/finish'
+    const OPEN_ROUTE = 'md2pdf/open'
     const CAPABILITY_ROUTE = 'md2pdf/capability'
     const SETTINGS_ROUTE = 'md2pdf/settings'
     const PRESETS_ROUTE = 'md2pdf/presets'
@@ -89,6 +90,8 @@ window.__ModuleLoader__.load({
         'toast.warnings': 'warnings: {message}',
         'toast.failed': 'PDF export failed: {message}',
         'toast.previewUnavailable': 'the DSH preview could not open; open the PDF from {path}',
+        'toast.previewFallback': 'the DSH preview was unavailable; opened the PDF with the system default app',
+        'toast.openFailed': 'the PDF was written, but the system default app could not open it: {message}',
         'engine.dsh': 'DSH',
         'settings.label': 'dsh-md2pdf',
         'settings.heading': 'Printed page styles',
@@ -188,6 +191,8 @@ window.__ModuleLoader__.load({
         'toast.warnings': '警告：{message}',
         'toast.failed': '导出 PDF 失败：{message}',
         'toast.previewUnavailable': 'DSH 预览未能打开；请从 {path} 打开 PDF',
+        'toast.previewFallback': 'DSH 预览不可用；已用系统默认程序打开 PDF',
+        'toast.openFailed': 'PDF 已写出，但系统默认程序未能打开：{message}',
         'engine.dsh': 'DSH 内置',
         'settings.label': 'dsh-md2pdf',
         'settings.heading': '打印样式',
@@ -1545,7 +1550,8 @@ window.__ModuleLoader__.load({
         /**
          * Print one file through the DSH Chromium guest.
          * @param input - source path and render overrides.
-         * @returns the Host's finish result.
+         * @returns the Host's finish result and the job's finish token, which
+         *   the viewer fallback needs to resolve the committed target.
          * @throws {Error & { code?: string }} with the Host's failure code.
          */
         async function printWithDsh(input) {
@@ -1584,7 +1590,7 @@ window.__ModuleLoader__.load({
             printOptions: payload.printOptions,
             sessionId: input.sessionId,
           })
-          return result
+          return { result, finishToken: payload.finishToken }
         }
 
         /**
@@ -1609,7 +1615,8 @@ window.__ModuleLoader__.load({
             return exportPdf(input)
           }
           try {
-            return { ok: true, result: await printWithDsh(input) }
+            const printed = await printWithDsh(input)
+            return { ok: true, result: printed.result, finishToken: printed.finishToken }
           } catch (error) {
             const code = error !== null && typeof error === 'object' ? error.code : undefined
             const failure = { ok: false, code, message: messageOf(error) }
@@ -1619,33 +1626,70 @@ window.__ModuleLoader__.load({
         }
 
         /**
+         * Ask the Host to open the committed PDF with the system default app.
+         *
+         * Only the finish token crosses from here. The Host resolves the target
+         * from its own job record, so this window cannot choose a file.
+         * @param finishToken - the token the Host returned from prepare.
+         * @returns whether the Host started the opener.
+         */
+        async function openWithSystem(finishToken) {
+          if (typeof finishToken !== 'string' || finishToken === '') return false
+          try {
+            const { response, payload } = await requestRoute(OPEN_ROUTE, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ finishToken }),
+            })
+            return response.ok && payload !== null && payload.ok === true
+          } catch (error) {
+            console.warn('md2pdf: could not ask the Host to open the PDF', error)
+            return false
+          }
+        }
+
+        /**
+         * Fall back to the system opener when the DSH viewer is unavailable.
+         * @param finishToken - the token the Host needs to resolve the PDF.
+         * @param path - the written PDF, for the toast.
+         * @returns the note to append to the success toast.
+         */
+        async function previewFallback(finishToken, path) {
+          const opened = await openWithSystem(finishToken)
+          return opened
+            ? t('toast.previewFallback', { path })
+            : t('toast.previewUnavailable', { path })
+        }
+
+        /**
          * Open the DSH viewer after a successful DSH export.
          *
          * The client opens only the address the Host computed; it never builds
-         * a path. When the viewer or the address is missing, the success toast
-         * still names the PDF and says where to open it.
+         * a path. When the viewer or the address is missing, or the viewer
+         * refuses the address, the Host opens the committed PDF instead.
          * @param result - the Host's finish result.
+         * @param finishToken - the token the Host needs to resolve the PDF.
          * @returns a note for the success toast, or null when none is needed.
          */
-        function openPreview(result) {
+        async function openPreview(result, finishToken) {
           if (afterExportOf(capabilityValue) !== 'dsh') return null
           const path = String(result?.pdfPath ?? '')
           const address = result?.previewAddress
           if (typeof address !== 'string' || address === '') {
-            return t('toast.previewUnavailable', { path })
+            return previewFallback(finishToken, path)
           }
           if (ctx.sidebarRight === undefined
             || typeof ctx.sidebarRight.openResource !== 'function') {
-            return t('toast.previewUnavailable', { path })
+            return previewFallback(finishToken, path)
           }
           try {
             ctx.sidebarRight.openResource(result.previewAddress)
             return null
           } catch (error) {
             // A viewer that refuses the address leaves the written PDF in
-            // place; the success toast still reports the path.
+            // place; hand it to the system opener instead.
             console.warn('md2pdf: could not open the PDF preview', error)
-            return t('toast.previewUnavailable', { path })
+            return previewFallback(finishToken, path)
           }
         }
 
@@ -1668,9 +1712,16 @@ window.__ModuleLoader__.load({
               message += ` — ${t('toast.warnings', { message: warnings.join('; ') })}`
             }
             // The viewer is a DSH export surface. A browser fallback has no
-            // preview address, and opening its file path is a separate action.
-            if (outcome.result.engine === 'dsh') {
-              const previewNote = openPreview(outcome.result)
+            // preview address; `system` is opened by the Host during finish,
+            // and a missing viewer falls back to that same Host opener.
+            if (afterExportOf(capabilityValue) === 'system') {
+              const opened = outcome.result.open
+              if (opened !== null && typeof opened === 'object' && opened.ok === false) {
+                const reason = typeof opened.message === 'string' ? opened.message : ''
+                message += ` — ${t('toast.openFailed', { message: reason })}`
+              }
+            } else if (outcome.result.engine === 'dsh') {
+              const previewNote = await openPreview(outcome.result, outcome.finishToken)
               if (previewNote !== null) message += ` — ${previewNote}`
             }
             notify(message, true)

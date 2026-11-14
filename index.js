@@ -16,7 +16,8 @@
 import { isAbsolute } from 'node:path'
 
 import {
-  describeCapability, exportMarkdownToPdf, finishExport, MARKDOWN_EXTENSIONS, prepareExport,
+  describeCapability, exportMarkdownToPdf, finishExport, MARKDOWN_EXTENSIONS, openFinishedExport,
+  prepareExport,
 } from './src/export.js'
 import { fontFacesInCss, fontsInCss } from './src/font-css.js'
 import { openPath } from './src/opener.js'
@@ -36,6 +37,9 @@ export const PREPARE_PATH = '/md2pdf/prepare'
 
 /** Route accepting the PDF bytes a DSH client printed. */
 export const FINISH_PATH = '/md2pdf/finish'
+
+/** Route opening the committed PDF of one finished UI job with the system opener. */
+export const OPEN_PATH = '/md2pdf/open'
 
 /** Route reporting which printers this Host can use. */
 export const CAPABILITY_PATH = '/md2pdf/capability'
@@ -205,6 +209,25 @@ function parsePrepareBody(text) {
 }
 
 /**
+ * Parse the open body.
+ *
+ * Only the finish token is read. A path, job id, or URL in the body is ignored,
+ * because the Host resolves the target from the job record it owns.
+ * @returns the request, or null when the body is unusable.
+ */
+function parseOpenBody(text) {
+  let body
+  try {
+    body = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return null
+  if (typeof body.finishToken !== 'string' || body.finishToken.trim() === '') return null
+  return { finishToken: body.finishToken.trim() }
+}
+
+/**
  * Read one Session's effective working directory from the Host's own services.
  * @param ctx - host context.
  * @param sessionId - the Session that reported the relative path.
@@ -260,6 +283,8 @@ export function apply(ctx, config) {
     pandocPath: config?.pandocPath,
     renderer: config?.renderer,
     timeoutMs: config?.timeoutMs,
+    // Injectable opener for the checks; production uses the platform launcher.
+    open: config?.open,
   }
 
   ctx.effect(() => ctx.webServer.register({
@@ -473,6 +498,47 @@ export function apply(ctx, config) {
       }
     },
   }), `md2pdf: POST ${FINISH_PATH}`)
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: OPEN_PATH,
+    handler: async (req, res) => {
+      if (refused(ctx, req, res)) return
+      if (req.method !== 'POST') {
+        res.statusCode = 405
+        res.setHeader('allow', 'POST')
+        res.end()
+        return
+      }
+      const essence = String(req.headers['content-type']).split(';', 1)[0]?.trim().toLowerCase()
+      if (essence !== 'application/json') {
+        sendJson(res, 415, { ok: false, code: 'unsupported-media-type', message: 'content-type must be application/json' })
+        return
+      }
+      let text
+      try {
+        text = await readBoundedBody(req)
+      } catch {
+        sendJson(res, 400, { ok: false, code: 'bad-request', message: 'request body unreadable' })
+        return
+      }
+      if (text === null) {
+        sendJson(res, 413, { ok: false, code: 'payload-too-large', message: 'request body is too large' })
+        return
+      }
+      const request = parseOpenBody(text)
+      if (request === null) {
+        sendJson(res, 400, { ok: false, code: 'bad-request', message: 'body must be JSON with a string "finishToken"' })
+        return
+      }
+      try {
+        sendJson(res, 200, await openFinishedExport(request, options))
+      } catch (error) {
+        const failure = failureResponse(error)
+        sendJson(res, failure.status, { ok: false, ...failure })
+      }
+    },
+  }), `md2pdf: POST ${OPEN_PATH}`)
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
