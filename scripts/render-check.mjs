@@ -3,7 +3,7 @@
  * Run: node scripts/render-check.mjs
  */
 import { buildHtml, DEFAULT_PAGE } from '../src/document.js'
-import { renderFrontmatter, renderMarkdown, splitFrontmatter } from '../src/markdown.js'
+import { parseFrontmatter, renderFrontmatter, renderMarkdown, splitFrontmatter } from '../src/markdown.js'
 import { renderDocument, sanitizeFragment } from '../src/html-build.js'
 import { DEFAULT_THEME, THEMES, resolveTheme, themeCss } from '../src/themes.js'
 
@@ -128,6 +128,15 @@ const frontmatter = splitFrontmatter('---\ntitle: 示例\nauthor: DSH\n---\nbody
 expectEqual('frontmatter body', frontmatter.body, 'body')
 expectContains('frontmatter row', renderFrontmatter(frontmatter.frontmatter), '<th>title</th><td>示例</td>')
 expectEqual('unterminated frontmatter stays body', splitFrontmatter('---\ntitle: x').frontmatter, null)
+
+// The config parser reads the same flat block as a record: one colon per line,
+// quoted values unwrapped, indented YAML left alone because only flat keys count.
+const fields = parseFrontmatter('title: 示例\nauthor: "DSH"\npdf.footer: Page {page} / {total}\n  nested: skipped')
+expectEqual('frontmatter record keeps ordinary keys', fields['title'], '示例')
+expectEqual('frontmatter record unwraps quoted values', fields['author'], 'DSH')
+expectEqual('frontmatter record keeps colons in values', fields['pdf.footer'], 'Page {page} / {total}')
+expectEqual('frontmatter record skips nested lines', Object.hasOwn(fields, 'nested'), false)
+expectEqual('absent frontmatter parses to no fields', Object.keys(parseFrontmatter(null)).join(','), '')
 
 // Flat pdf.* keys configure the export and stay out of the visible field table.
 const configFrontmatter = splitFrontmatter('---\ntitle: 示例\npdf.header: 内部资料\npdf.page.size: A3\n---\nbody')

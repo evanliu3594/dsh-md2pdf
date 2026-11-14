@@ -24,6 +24,7 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path
 import { mergeDocumentConfig } from './document-config.js'
 import { DEFAULT_PAGE } from './document.js'
 import { baseHrefOf, renderDocument } from './html-build.js'
+import { parseFrontmatter, splitFrontmatter } from './markdown.js'
 import { pageMarginsInches, pageOverrideCss } from './page-css.js'
 import { describeEngines, PdfError, printBrowser, verifyPdf } from './pdf.js'
 import { createPrintJobs } from './print-jobs.js'
@@ -143,10 +144,10 @@ function encodeResourceSegment(segment) {
 export function sessionFileAddress(sessionId, path) {
   const normalized = String(path).replace(/\\/g, '/')
   const encodedPath = normalized.split('/').map(encodeResourceSegment).join('/')
-  // A POSIX path already begins with the separator; a Windows drive path does
-  // not, so insert exactly one separator before it.
-  const separator = encodedPath.startsWith('/') ? '' : '/'
-  return `dsh-resource://file/session/${encodeURIComponent(String(sessionId))}${separator}${encodedPath}`
+  // The grammar is `<session>/<path>`. The path keeps its own leading slash, so
+  // a POSIX address shows two separators after the id and Windows one before
+  // the drive path; neither form is trimmed.
+  return `dsh-resource://file/session/${encodeURIComponent(String(sessionId))}/${encodedPath}`
 }
 
 /**
@@ -390,10 +391,11 @@ async function commitFinish(job, finishToken, pdfBytes, jobs) {
 /**
  * Render one markdown document, start its loopback server, and create a job.
  *
- * The page uses the selected preset's stylesheet plus this request's explicit
- * page override. Front-matter and preset page metadata are wired in the page
- * settings task; this transport reports no warnings yet, so the field exists
- * and stays empty rather than changing shape later.
+ * The page merges, lowest to highest, preset page metadata (empty until the page
+ * settings task), the file's flat `pdf.*` front matter, and this request's
+ * explicit override. The preset is chosen by request, then `pdf.preset`, then
+ * the selected preset. `mergeDocumentConfig` parses the front matter and returns
+ * the unknown-key warnings this transport reports.
  * @param request - `{ path, cwd?, sessionId?, preset?, page?, documentConfig?, owner? }`.
  * @param options - process-level renderer, pandoc, and an injectable job store.
  * @returns the job id, the printable URL, the finish token, print options, and warnings.
@@ -420,13 +422,26 @@ export async function prepareExport(request = {}, options = {}) {
   const stem = name.slice(0, name.length - extname(name).length)
   const jobs = options.jobs ?? defaultJobs
 
-  const { selected } = await listPresets()
-  const presetId = typeof request?.preset === 'string' && request.preset !== '' ? request.preset : selected
-  const preset = await readPreset(presetId)
-
-  const { page } = mergeDocumentConfig({
+  const { frontmatter } = splitFrontmatter(markdown)
+  const fields = parseFrontmatter(frontmatter)
+  // Preset metadata arrives with the page settings task, so the lowest page
+  // layer is empty here; the merge still exercises the full precedence chain.
+  const merged = mergeDocumentConfig({
+    presetPage: {},
+    frontmatter: fields,
     request: { page: request?.page, documentConfig: request?.documentConfig },
   })
+  const page = merged.page
+  const warnings = merged.warnings
+
+  const { selected } = await listPresets()
+  const requestedPreset = typeof request?.preset === 'string' && request.preset !== '' ? request.preset : null
+  const declaredPreset = typeof fields['pdf.preset'] === 'string' && fields['pdf.preset'] !== ''
+    ? fields['pdf.preset']
+    : null
+  const presetId = requestedPreset ?? declaredPreset ?? selected
+  const preset = await readPreset(presetId)
+
   const rendered = await renderDocument({
     markdown,
     title: stem,
@@ -446,7 +461,6 @@ export async function prepareExport(request = {}, options = {}) {
     pageRanges: '',
     ...(page.landscape === undefined ? {} : { landscape: page.landscape }),
   }
-  const warnings = []
   const job = jobs.create({
     sessionId: typeof request?.sessionId === 'string' && request.sessionId !== '' ? request.sessionId : undefined,
     sourcePath,
@@ -511,6 +525,12 @@ export async function finishExport({ finishToken, pdfBytes } = {}, options = {})
   const jobs = options.jobs ?? defaultJobs
   const job = jobs.get(finishToken)
   if (job === null) throw new PdfError('bad-request', 'unknown finish token')
+  // `get` also matches the asset token and the job id. Only the finish secret
+  // may commit, and this refusal precedes validation, any write, and server
+  // shutdown, so a caller holding another job identifier has no side effect.
+  if (job.finishToken !== finishToken) {
+    throw new PdfError('bad-request', 'invalid finish token')
+  }
   // The client returned its bytes before the deadline; stop the expiry timer so
   // a slow disk write cannot expire the job halfway through the commit. The
   // server itself stays up until the attempt ends, then closes in the finally.

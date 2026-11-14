@@ -65,6 +65,19 @@ function sleep(ms) {
 }
 
 /**
+ * Run one async call and return its error or its value.
+ * @param run - the call under test.
+ * @returns the produced value or the thrown error.
+ */
+async function outcome(run) {
+  try {
+    return { value: await run() }
+  } catch (error) {
+    return { error }
+  }
+}
+
+/**
  * Report whether a URL stopped accepting connections.
  * @param url - the loopback document URL.
  * @param timeoutMs - how long to wait for the refusal.
@@ -93,6 +106,21 @@ async function hasStagingFile(directory) {
   return names.some(name => name.startsWith('.md2pdf-') && name.endsWith('.pdf.tmp'))
 }
 
+/**
+ * Read one loopback page's status without letting a closed server end the suite.
+ * @param url - the loopback document URL.
+ * @returns the HTTP status, or 0 when the server is closed.
+ */
+async function httpStatus(url) {
+  try {
+    const response = await fetch(url)
+    await response.text()
+    return response.status
+  } catch {
+    return 0
+  }
+}
+
 const here = dirname(fileURLToPath(import.meta.url))
 const home = await mkdtemp(join(tmpdir(), 'dsh-md2pdf-export-home-'))
 const work = await mkdtemp(join(tmpdir(), 'dsh-md2pdf-export-work-'))
@@ -119,10 +147,11 @@ try {
   expectEqual('a truncated pdf is refused', verifyPdf(Buffer.from('%PDF-1.4\nbody only')).code, 'pdf-invalid')
 
   // DSH resource addresses keep the leading slash, encode spaces, and let the
-  // drive colon through so the viewer sees an ordinary absolute path.
+  // drive colon through so the viewer sees an ordinary absolute path. The path
+  // keeps its own leading separator, so a POSIX address has two after the id.
   expectEqual('session file address',
     sessionFileAddress('s1', '/Users/liu/a b.md'),
-    'dsh-resource://file/session/s1/Users/liu/a%20b.md')
+    'dsh-resource://file/session/s1//Users/liu/a%20b.md')
   expectEqual('session file address normalizes windows separators',
     sessionFileAddress('s2', 'C:\\Users\\liu\\a b.md'),
     'dsh-resource://file/session/s2/C:/Users/liu/a%20b.md')
@@ -163,7 +192,12 @@ try {
   expectEqual('finish reports the dsh engine', first.engine, 'dsh')
   expectEqual('finish writes the source-stem target', first.pdfPath, target)
   expectEqual('finish reports the byte count', first.bytes, PDF.byteLength)
-  expectEqual('finish returns the preview address', first.previewAddress, sessionFileAddress('s1', target))
+  // Literal expectation: the address is the encoded session id, one separator,
+  // then the absolute path with its own leading slash. The temp fixture holds
+  // no reserved path characters beyond a possible space.
+  const literalTarget = target.replace(/\\/g, '/').replace(/ /g, '%20')
+  expectEqual('finish returns the literal preview address', first.previewAddress,
+    `dsh-resource://file/session/s1/${literalTarget}`)
   expectEqual('finish writes the returned bytes', (await readFile(target)).equals(PDF), true)
   expectEqual('the server closes after finish', await isClosed(prepared.printUrl), true)
   expectEqual('finish leaves no staging file', await hasStagingFile(work), false)
@@ -190,6 +224,23 @@ try {
   const unknown = await capture(() => finishExport({ finishToken: 'missing-token', pdfBytes: PDF }))
   expectEqual('an unknown finish token is a bad request', unknown?.code, 'bad-request')
 
+  // Only the finish token may commit. The asset token sits in the print URL and
+  // the job id is returned to the client, so either one reaching finish must be
+  // refused before any validation, write, or server shutdown.
+  const guarded = await prepareExport({ path: source, sessionId: 's1' })
+  const assetToken = /\/p\/([0-9a-f]{64})\/document\.html$/.exec(guarded.printUrl)?.[1] ?? ''
+  expectEqual('the print url carries a 64-hex asset token', /^[0-9a-f]{64}$/.test(assetToken), true)
+  const viaAsset = await capture(() => finishExport({ finishToken: assetToken, pdfBytes: OTHER_PDF }))
+  expectEqual('an asset token is refused as a finish token', viaAsset?.code, 'bad-request')
+  const viaJobId = await capture(() => finishExport({ finishToken: guarded.jobId, pdfBytes: OTHER_PDF }))
+  expectEqual('a job id is refused as a finish token', viaJobId?.code, 'bad-request')
+  expectEqual('a mismatched token leaves the target untouched', (await readFile(target)).equals(PDF), true)
+  expectEqual('a mismatched token leaves no staging file', await hasStagingFile(work), false)
+  expectEqual('a mismatched token leaves the job server up', await httpStatus(guarded.printUrl), 200)
+  const guardedFinish = await outcome(() => finishExport({ finishToken: guarded.finishToken, pdfBytes: PDF }))
+  expectEqual('the real token still finishes after a refused token', guardedFinish.value?.bytes, PDF.byteLength)
+  expectEqual('the guarded server closes after the real finish', await isClosed(guarded.printUrl), true)
+
   // Invalid bytes fail the job, keep the old PDF, and close the server.
   const invalid = await prepareExport({ path: source, sessionId: 's1' })
   const rejected = await capture(() => finishExport({
@@ -215,6 +266,50 @@ try {
 
   const rejectedPage = await capture(() => prepareExport({ path: source, page: { size: 'B5' } }))
   expectEqual('an invalid page override is refused', rejectedPage?.code, 'bad-request')
+
+  // Flat `pdf.*` front matter configures the page and the preset. A request
+  // preset outranks `pdf.preset`, which outranks the selected preset, and an
+  // unknown `pdf.*` key is reported as a warning instead of blocking.
+  const configuredSource = join(work, 'frontmatter.md')
+  await writeFile(configuredSource, [
+    '---',
+    'title: Front matter',
+    'pdf.preset: paper',
+    'pdf.page.size: A3',
+    'pdf.page.landscape: true',
+    'pdf.page.marginMm: 30',
+    'pdf.unknown: keep',
+    '---',
+    '',
+    '# Heading',
+    '',
+  ].join('\n'))
+  const configured = await prepareExport({ path: configuredSource, sessionId: 's1' })
+  expectEqual('front matter warnings are returned', configured.warnings.join(','), 'pdf.unknown')
+  expectEqual('front matter landscape reaches print options', configured.printOptions.landscape, true)
+  expectClose('front matter margin reaches print options', configured.printOptions.margins.top, 1.1811)
+  const configuredResponse = await fetch(configured.printUrl)
+  const configuredHtml = await configuredResponse.text()
+  expectEqual('front matter page override reaches the page css',
+    configuredHtml.includes('@page{size:A3 landscape;margin:30mm}'), true)
+  expectEqual('front matter preset is honoured', configuredHtml.includes('sup.footnote-ref a'), true)
+  await finishExport({ finishToken: configured.finishToken, pdfBytes: PDF })
+
+  const overriding = await prepareExport({ path: configuredSource, preset: 'gongwen' })
+  const overridingResponse = await fetch(overriding.printUrl)
+  const overridingHtml = await overridingResponse.text()
+  expectEqual('a request preset outranks the front matter preset',
+    overridingHtml.includes('sup.footnote-ref a'), false)
+  expectEqual('the request preset stylesheet is used', overridingHtml.includes('color: #e60012'), true)
+  await finishExport({ finishToken: overriding.finishToken, pdfBytes: PDF })
+
+  const badPresetSource = join(work, 'bad-preset.md')
+  await writeFile(badPresetSource, '---\npdf.preset: missing\n---\n\n# Heading\n')
+  const badPreset = await capture(() => prepareExport(
+    { path: badPresetSource },
+    { jobs: createPrintJobs({ timeoutMs: 150 }) },
+  ))
+  expectEqual('an unknown front matter preset is not found', badPreset?.code, 'not-found')
 
   // Deadline: the timer expires the job and closes its server.
   const urgent = createPrintJobs({ timeoutMs: 150 })

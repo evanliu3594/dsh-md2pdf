@@ -127,6 +127,31 @@ export function splitFrontmatter(source) {
 }
 
 /**
+ * Parse a leading frontmatter block into flat fields.
+ *
+ * v2 uses flat keys only, so one `key: value` line is one field. An indented
+ * line starts a nested structure and is ignored rather than misread; a line
+ * without a colon carries no field. Quotes around a value are removed. Values
+ * stay text because the document-config parser decides whether a field is a
+ * boolean, a number, or ordinary text.
+ * @param source - YAML between the fences, or null.
+ * @returns the flat fields in source order.
+ */
+export function parseFrontmatter(source) {
+  const fields = {}
+  if (typeof source !== 'string') return fields
+  for (const raw of source.split('\n')) {
+    if (raw.trim() === '' || /^\s/.test(raw)) continue
+    const separator = raw.indexOf(':')
+    if (separator <= 0) continue
+    const key = raw.slice(0, separator).trim()
+    if (key === '') continue
+    fields[key] = raw.slice(separator + 1).trim().replace(/^['"]|['"]$/g, '')
+  }
+  return fields
+}
+
+/**
  * Render frontmatter as a two-column field list.
  *
  * Flat `pdf.*` keys configure the export rather than describe the document, so
@@ -138,13 +163,8 @@ export function splitFrontmatter(source) {
 export function renderFrontmatter(source) {
   if (source === null) return ''
   const rows = []
-  for (const raw of source.split('\n')) {
-    if (raw.trim() === '' || /^\s/.test(raw)) continue
-    const separator = raw.indexOf(':')
-    if (separator <= 0) continue
-    const key = raw.slice(0, separator).trim()
-    const value = raw.slice(separator + 1).trim().replace(/^['"]|['"]$/g, '')
-    if (key === '' || key.startsWith('pdf.')) continue
+  for (const [key, value] of Object.entries(parseFrontmatter(source))) {
+    if (key.startsWith('pdf.')) continue
     rows.push(`<tr><th>${escapeHtml(key)}</th><td>${escapeHtml(value)}</td></tr>`)
   }
   if (rows.length === 0) return ''
