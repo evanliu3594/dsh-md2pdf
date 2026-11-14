@@ -10,8 +10,10 @@
  * rejected when it is empty, a dotfile, or a symbolic link; then `realpath`
  * must still land inside the asset root, which also catches a symlinked parent
  * swapped in after the first check. Only regular files under the per-file
- * ceiling are read. Directories, devices, and directory listings do not exist
- * here.
+ * ceiling are read. Every response body is charged to one per-job total
+ * ceiling before it is written, and the charge is taken in one synchronous
+ * step, so concurrent requests cannot overshoot the shared budget.
+ * Directories, devices, and directory listings do not exist here.
  */
 import { lstat, readFile, realpath } from 'node:fs/promises'
 import { createServer } from 'node:http'
@@ -111,11 +113,12 @@ function inside(base, target) {
  * The server is bound to an operating-system-assigned port on `127.0.0.1`.
  * The returned `url` ends with `/p/<assetToken>/`, so relative image and font
  * URLs in the document resolve under the token gate.
- * @param options - document html, asset directory, token, and size ceiling.
+ * @param options - document html, asset directory, token, and size ceilings.
  * @param options.html - the complete printable HTML page, served from memory.
  * @param options.assetRoot - directory holding the markdown source and its assets.
  * @param options.assetToken - random token that forms the URL path prefix.
  * @param options.maxFileBytes - largest asset the server will read.
+ * @param options.maxTotalBytes - largest cumulative body total one job may serve.
  * @returns the loopback base URL and an idempotent close function.
  */
 export async function startPrintServer({
@@ -123,6 +126,7 @@ export async function startPrintServer({
   assetRoot,
   assetToken,
   maxFileBytes = 32 * 1024 * 1024,
+  maxTotalBytes = 256 * 1024 * 1024,
 } = {}) {
   if (typeof html !== 'string') throw new TypeError('html must be text')
   if (typeof assetRoot !== 'string' || assetRoot === '') {
@@ -134,6 +138,9 @@ export async function startPrintServer({
   if (!Number.isFinite(maxFileBytes) || maxFileBytes <= 0) {
     throw new TypeError('maxFileBytes must be a positive number')
   }
+  if (!Number.isFinite(maxTotalBytes) || maxTotalBytes <= 0) {
+    throw new TypeError('maxTotalBytes must be a positive number')
+  }
 
   const root = resolve(assetRoot)
   const rootReal = await realpath(root)
@@ -143,13 +150,37 @@ export async function startPrintServer({
   let expectedHost = ''
   let url = ''
   let closePromise = null
+  let sentBytes = 0
+
+  /**
+   * Charge body bytes to the per-job total response ceiling.
+   *
+   * The comparison and the increment happen in one synchronous step, so two
+   * requests cannot both spend the same remaining allowance.
+   * @param bytes - body bytes about to be served.
+   * @returns true when the charge fits; false when the ceiling would be exceeded.
+   */
+  function reserve(bytes) {
+    if (bytes > maxTotalBytes - sentBytes) return false
+    sentBytes += bytes
+    return true
+  }
+
+  /**
+   * Give back a charge for bytes that will not be served.
+   * @param bytes - the charge to release.
+   */
+  function release(bytes) {
+    sentBytes = Math.max(0, sentBytes - bytes)
+  }
 
   /**
    * Resolve one asset request into file bytes, or refuse it.
    * @param encoded - the path after the token prefix, still URL-encoded.
+   * @param reserveBody - whether the response will carry the file bytes.
    * @returns the file metadata and bytes, an oversize marker, or null.
    */
-  async function assetOf(encoded) {
+  async function assetOf(encoded, reserveBody) {
     let decoded
     try {
       decoded = decodeURIComponent(encoded)
@@ -183,9 +214,34 @@ export async function startPrintServer({
     }
     if (!inside(rootReal, real)) return null
 
+    let charged = 0
+    if (reserveBody) {
+      if (!reserve(info.size)) return { tooLarge: true }
+      charged = info.size
+    }
+
     const data = await readFile(real).catch(() => null)
-    if (data === null) return null
-    if (data.length > maxFileBytes) return { tooLarge: true }
+    if (data === null) {
+      if (charged !== 0) release(charged)
+      return null
+    }
+    if (reserveBody && data.length !== charged) {
+      const extra = data.length - charged
+      if (extra > 0) {
+        if (!reserve(extra)) {
+          release(charged)
+          return { tooLarge: true }
+        }
+        charged += extra
+      } else {
+        release(-extra)
+        charged = data.length
+      }
+    }
+    if (data.length > maxFileBytes) {
+      if (charged !== 0) release(charged)
+      return { tooLarge: true }
+    }
     return { data, type: mimeForPath(candidate) }
   }
 
@@ -210,6 +266,7 @@ export async function startPrintServer({
 
     const encoded = pathname.slice(prefix.length)
     if (encoded === DOCUMENT_NAME) {
+      if (req.method !== 'HEAD' && !reserve(htmlBytes.length)) return sendEmpty(res, 413)
       res.writeHead(200, {
         ...securityHeaders(),
         'content-type': 'text/html; charset=utf-8',
@@ -219,7 +276,7 @@ export async function startPrintServer({
       return
     }
 
-    const asset = await assetOf(encoded)
+    const asset = await assetOf(encoded, req.method !== 'HEAD')
     if (asset === null) return sendEmpty(res, 404)
     if (asset.tooLarge === true) return sendEmpty(res, 413)
     res.writeHead(200, {

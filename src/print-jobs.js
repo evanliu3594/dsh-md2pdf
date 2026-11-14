@@ -11,9 +11,18 @@
  * State transitions:
  *
  * ```
- * prepared -> claimed -> finished
+ * prepared -> claimed -> printing -> finished
+ * prepared/claimed/printing -> failed
  * prepared/claimed/printing -> expired
  * ```
+ *
+ * `failed` is terminal for committing. The design treats a client error or an
+ * invalid PDF payload as the end of that job, so `finish` refuses a failed job
+ * even when later bytes are valid. `markPrinting` records that the client began
+ * printing; `fail` records a client-side error. Both are idempotent for the
+ * state they produce. `finish` accepts any open state so a client that omits
+ * the printing signal can still commit; the intended path is claim, mark
+ * printing, finish.
  *
  * The queue is FIFO over insertion order. A job's deadline starts at creation,
  * so time spent waiting for a client counts against the 120 s timeout.
@@ -83,7 +92,7 @@ function completePdf(bytes) {
  * @param options.now - clock function in milliseconds; defaults to `Date.now`.
  * @param options.timeoutMs - how long a job may live; defaults to 120000.
  * @param options.presenceMs - how long a client record counts; defaults to 10000.
- * @returns the job operations, presence probe, and close function.
+ * @returns the job operations, transitions, presence probe, and close function.
  */
 export function createPrintJobs({
   now = Date.now,
@@ -148,11 +157,67 @@ export function createPrintJobs({
   }
 
   /**
+   * Move one claimed job to printing.
+   *
+   * Repeating the call on a printing job returns it unchanged. A prepared job
+   * must be claimed first; failed, finished, and expired jobs never print.
+   * @param idOrToken - job id, asset token, or finish token.
+   * @returns the job in `printing`.
+   * @throws {Error} with `code` and `status` when the job cannot print.
+   */
+  function markPrinting(idOrToken) {
+    const job = get(idOrToken)
+    if (job === null) throw jobError('bad-request', 400, 'unknown print job')
+    if (job.state === 'expired') throw jobError('job-timeout', 504, 'this print job has expired')
+    if (job.state === 'failed') throw jobError('state-conflict', 409, 'this print job has failed')
+    if (job.state === 'finished') throw jobError('state-conflict', 409, 'this print job already finished')
+    if (job.state === 'prepared') throw jobError('state-conflict', 409, 'claim the job before printing')
+    job.state = 'printing'
+    return job
+  }
+
+  /**
+   * Mark one job failed and record why.
+   * @param job - the open job to fail.
+   * @param reason - short machine code for the failure.
+   * @returns the failed job.
+   */
+  function markFailed(job, reason) {
+    job.state = 'failed'
+    job.failure = { reason, failedAt: clock() }
+    return job
+  }
+
+  /**
+   * Mark one open job failed from the outside.
+   *
+   * The first reason wins; repeating the call returns the same job and keeps
+   * the original reason and timestamp. A finished job is never demoted.
+   * @param idOrToken - job id, asset token, or finish token.
+   * @param reason - short machine code, such as `client-error`.
+   * @returns the failed job.
+   * @throws {Error} with `code` and `status` when the job cannot fail.
+   */
+  function fail(idOrToken, reason = 'client-error') {
+    if (typeof reason !== 'string' || reason === '') {
+      throw new TypeError('failure reason must be text')
+    }
+    const job = get(idOrToken)
+    if (job === null) throw jobError('bad-request', 400, 'unknown print job')
+    if (job.state === 'expired') throw jobError('job-timeout', 504, 'this print job has expired')
+    if (job.state === 'finished') throw jobError('state-conflict', 409, 'this print job already finished')
+    if (job.state === 'failed') return job
+    return markFailed(job, reason)
+  }
+
+  /**
    * Commit one PDF payload for a finish token.
    *
    * The first successful call stores a result on the job. Repeating it with the
    * same bytes returns that same object; repeating it with different bytes
-   * refuses the write with status 409. No file is written here.
+   * refuses the write with status 409. An invalid payload fails the job, so a
+   * later valid payload cannot commit work the design already ended. No file is
+   * written here.
    * @param finishToken - the job's finish secret.
    * @param pdfBytes - payload returned by the client printer.
    * @returns the committed result object stored on the job.
@@ -162,6 +227,7 @@ export function createPrintJobs({
     const job = byFinishToken(finishToken)
     if (job === null) throw jobError('bad-request', 400, 'unknown finish token')
     if (job.state === 'expired') throw jobError('job-timeout', 504, 'this print job has expired')
+    if (job.state === 'failed') throw jobError('state-conflict', 409, 'this print job has failed')
 
     const bytes = bytesOf(pdfBytes)
     if (job.state === 'finished') {
@@ -171,6 +237,7 @@ export function createPrintJobs({
     }
 
     if (bytes === null || !completePdf(bytes)) {
+      markFailed(job, 'pdf-invalid')
       throw jobError('pdf-invalid', 502, 'the payload is not a complete PDF')
     }
 
@@ -257,5 +324,5 @@ export function createPrintJobs({
     }
   }
 
-  return { create, claimNext, finish, expire, get, presence, close }
+  return { create, claimNext, markPrinting, fail, finish, expire, get, presence, close }
 }

@@ -93,6 +93,9 @@ const outside = await mkdtemp(join(tmpdir(), 'dsh-md2pdf-print-server-outside-')
 let server = null
 try {
   await writeFile(join(root, 'img.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  await writeFile(join(root, 'one.bin'), Buffer.alloc(8, 0x61))
+  await writeFile(join(root, 'two.bin'), Buffer.alloc(8, 0x62))
+  await writeFile(join(root, 'extra.bin'), Buffer.alloc(6, 0x63))
   await writeFile(join(root, '.hidden'), 'hidden')
   await mkdir(join(root, 'folder'))
   await writeFile(join(root, 'folder', 'inside.txt'), 'inside')
@@ -139,6 +142,64 @@ try {
   } finally {
     await limited.close()
   }
+
+  // The 256 MiB default ceiling is too large to exercise; a tiny budget proves
+  // the same arithmetic. The document is 11 bytes, so the budget below leaves
+  // room for the document plus one 8-byte asset and less than two.
+  const documentBytes = Buffer.byteLength('<h1>ok</h1>')
+  const budget = await startPrintServer({
+    html: '<h1>ok</h1>',
+    assetRoot: root,
+    assetToken: 'budget-token',
+    maxFileBytes: 1024,
+    maxTotalBytes: documentBytes + 8 + 7,
+  })
+  try {
+    expectEqual('the document spends the total ceiling', (await fetch(`${budget.url}document.html`)).status, 200)
+    expectEqual('the first asset fits the total ceiling', (await fetch(`${budget.url}one.bin`)).status, 200)
+    expectEqual('the second asset exceeds the total ceiling', (await fetch(`${budget.url}two.bin`)).status, 413)
+    expectEqual('a refused body does not spend the ceiling', (await fetch(`${budget.url}extra.bin`)).status, 200)
+    expectEqual('a refetch exceeds the total ceiling', (await fetch(`${budget.url}one.bin`)).status, 413)
+  } finally {
+    await budget.close()
+  }
+
+  const tinyBudget = await startPrintServer({
+    html: '<h1>ok</h1>',
+    assetRoot: root,
+    assetToken: 'tiny-budget-token',
+    maxTotalBytes: 4,
+  })
+  try {
+    expectEqual('the document obeys the total ceiling', (await fetch(`${tinyBudget.url}document.html`)).status, 413)
+  } finally {
+    await tinyBudget.close()
+  }
+
+  // Two concurrent requests must not both spend the same last byte allowance.
+  // Whichever request reserves first wins, so the pair is always one 200 and
+  // one 413, even though the server cannot predict the winning order.
+  const race = await startPrintServer({
+    html: '<h1>ok</h1>',
+    assetRoot: root,
+    assetToken: 'race-token',
+    maxTotalBytes: 8,
+  })
+  try {
+    const raced = await Promise.all([fetch(`${race.url}one.bin`), fetch(`${race.url}one.bin`)])
+    expectEqual('concurrent bodies cannot overshoot the total ceiling',
+      raced.map(response => response.status).sort().join(','), '200,413')
+  } finally {
+    await race.close()
+  }
+
+  const badBudget = await startPrintServer({
+    html: '<p>bad budget</p>',
+    assetRoot: root,
+    assetToken: 'bad-budget-token',
+    maxTotalBytes: 0,
+  }).then(() => null, error => error)
+  expectTrue('the total ceiling must be positive', badBudget instanceof TypeError)
 
   expectEqual('relative escape', (await fetch(`${url}../secret`)).status, 404)
   expectEqual('encoded escape', (await fetch(`${url}%2e%2e%2fsecret`)).status, 404)
