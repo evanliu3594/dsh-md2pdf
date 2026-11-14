@@ -26,6 +26,8 @@ window.__ModuleLoader__.load({
     const SETTINGS_ROUTE = 'md2pdf/settings'
     const PRESETS_ROUTE = 'md2pdf/presets'
     const PREVIEWS_ROUTE = 'md2pdf/previews'
+    const NEXT_JOB_ROUTE = 'md2pdf/print-jobs/next'
+    const FAIL_JOB_ROUTE = 'md2pdf/print-jobs/fail'
 
     /** The print guest must attach and become ready before this deadline. */
     const PRINT_ATTACH_TIMEOUT_MS = 20000
@@ -41,6 +43,27 @@ window.__ModuleLoader__.load({
       'client-required',
       'no-printer',
       'print-failed',
+      'job-timeout',
+      'asset-server-failed',
+    ])
+
+    /** How long one broker long poll holds its request open. */
+    const BROKER_WAIT_SECONDS = 20
+
+    /** How long the broker waits after a transport or Host error. */
+    const BROKER_RETRY_MS = 1000
+
+    /**
+     * Reasons the broker fail route accepts. The list mirrors the Host's
+     * allowlist; an unexpected client code is reported as `client-error`.
+     */
+    const BROKER_FAILURE_REASONS = new Set([
+      'client-error',
+      'client-required',
+      'no-printer',
+      'print-failed',
+      'pdf-invalid',
+      'file-busy',
       'job-timeout',
       'asset-server-failed',
     ])
@@ -933,6 +956,137 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Sleep for a bounded time without blocking the page.
+     * @param ms - milliseconds.
+     * @returns a promise that resolves after the delay.
+     */
+    function sleep(ms) {
+      return new Promise(resolveSleep => { setTimeout(resolveSleep, ms) })
+    }
+
+    /** The running broker poll state, or null while the print host is unmounted. */
+    let brokerPoll = null
+
+    /**
+     * Tell the Host that one brokered job failed.
+     *
+     * Only the claimed job's finish token and a reason from the closed list
+     * cross here. The Host has already ended the job in most cases, so a
+     * failed report is not surfaced: there is no user action for it.
+     * @param finishToken - the job's write credential.
+     * @param code - the failure code the print flow produced, if any.
+     * @returns a promise that resolves after the report attempt.
+     */
+    async function reportBrokerFailure(finishToken, code) {
+      if (typeof finishToken !== 'string' || finishToken === '') return
+      const reason = BROKER_FAILURE_REASONS.has(code) ? code : 'client-error'
+      try {
+        await requestRoute(FAIL_JOB_ROUTE, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ finishToken, reason }),
+        })
+      } catch {
+        // The job is already ended or the page is unloading. A broker job has
+        // no toast, so there is nothing to report and nothing to retry.
+      }
+    }
+
+    /**
+     * Print one job the Host brokered and commit or fail it.
+     *
+     * The job follows the same guest print flow as a UI export. The difference
+     * is what happens after: a tool job never opens the DSH preview, never
+     * runs `afterExport`, and never shows a toast.
+     * @param job - the Host payload: print URL, finish token, and print options.
+     * @returns a promise that resolves after the job is finished or reported.
+     */
+    async function runBrokerJob(job) {
+      try {
+        await runPrintJob({
+          printUrl: job.printUrl,
+          finishToken: job.finishToken,
+          printOptions: job.printOptions,
+          sessionId: job.sessionId,
+        })
+      } catch (error) {
+        const code = error !== null && typeof error === 'object' ? error.code : undefined
+        await reportBrokerFailure(job.finishToken, code)
+      }
+    }
+
+    /**
+     * Long-poll the Host for agent tool jobs until the print host unmounts.
+     *
+     * Polling starts only when this window has the DSH printer and the
+     * configured engine allows it. A 204 means the queue is empty, so the loop
+     * asks again immediately; a transport or Host error backs off briefly.
+     * The in-flight request is aborted when the component is disposed.
+     * @param state - the poll state with a stop flag and the current abort hook.
+     * @returns a promise that resolves when polling stops.
+     */
+    async function runBrokerPoll(state) {
+      const ready = await loadCapability()
+      if (state.stopped) return
+      if (printEngineOf(ready) === 'browser') return
+      if (!dshPrinterAvailable()) return
+      while (!state.stopped) {
+        const request = new AbortController()
+        state.abort = () => request.abort()
+        let answer
+        try {
+          answer = await requestRoute(`${NEXT_JOB_ROUTE}?wait=${BROKER_WAIT_SECONDS}`, {
+            headers: { accept: 'application/json' },
+            signal: request.signal,
+          })
+        } catch {
+          state.abort = null
+          if (state.stopped) return
+          await sleep(BROKER_RETRY_MS)
+          continue
+        }
+        state.abort = null
+        if (state.stopped) return
+        const { response, payload } = answer
+        if (response.status === 204) continue
+        if (!response.ok
+          || payload === null
+          || typeof payload.printUrl !== 'string'
+          || typeof payload.finishToken !== 'string') {
+          await sleep(BROKER_RETRY_MS)
+          continue
+        }
+        await runBrokerJob(payload)
+      }
+    }
+
+    /**
+     * Start the broker poll if it is not already running.
+     */
+    function startPrintBroker() {
+      if (brokerPoll !== null) return
+      const state = { stopped: false, abort: null }
+      brokerPoll = state
+      runBrokerPoll(state)
+        .catch(() => {
+          // A failed capability read must not leave a dead loop registered.
+          if (brokerPoll === state) brokerPoll = null
+        })
+    }
+
+    /**
+     * Stop the broker poll and abort the request it is holding.
+     */
+    function stopPrintBroker() {
+      const state = brokerPoll
+      brokerPoll = null
+      if (state === null) return
+      state.stopped = true
+      if (typeof state.abort === 'function') state.abort()
+      state.abort = null
+    }
+
+    /**
      * Run one export through the Host's browser fallback.
      * @param input - source path and the Session that reported it.
      * @returns the Host's answer, or a named failure.
@@ -1498,6 +1652,12 @@ window.__ModuleLoader__.load({
         return () => {
           if (printHostContainer === container) printHostContainer = null
         }
+      }, [])
+      // The broker loop is mounted with the surface. It stops on unmount, so a
+      // page refresh or a closed window leaves no poll behind.
+      React.useEffect(() => {
+        startPrintBroker()
+        return () => { stopPrintBroker() }
       }, [])
       return h(React.Fragment, null,
         h(Styles, null),

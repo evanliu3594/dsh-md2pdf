@@ -1,0 +1,936 @@
+/**
+ * Checks for the agent print broker.
+ *
+ * The broker lets the `md2pdf_export` tool use a connected DSH Desktop client's
+ * own printer. These checks pin the four pieces that make that safe:
+ *
+ *   - the job store claims only tool jobs, one at a time, oldest first;
+ *   - presence is a 10 s window that a long poll keeps alive with a heartbeat;
+ *   - the tool engine policy and its narrow fallback list;
+ *   - the long-poll route and the fail route, including what they never expose.
+ *
+ * The tool checks run the real `prepareExport` / `finishExport` pair against a
+ * temporary copy of `samples/sample.md`. When a browser fallback is expected,
+ * the checks inject a fake browser printer, so no Chromium process is started.
+ *
+ * Run: node scripts/broker-check.mjs
+ */
+import { copyFile, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+let failures = 0
+let checks = 0
+
+/**
+ * Assert two values are equal.
+ * @param label - what the check proves.
+ * @param actual - produced value.
+ * @param expected - required value.
+ */
+function expectEqual(label, actual, expected) {
+  checks += 1
+  if (actual === expected) return
+  failures += 1
+  process.stdout.write(`FAIL ${label}\n  expected: ${String(expected)}\n  actual:   ${String(actual)}\n`)
+}
+
+/**
+ * Assert a condition holds.
+ * @param label - what the check proves.
+ * @param condition - required truth.
+ */
+function expectTrue(label, condition) {
+  expectEqual(label, condition === true, true)
+}
+
+/**
+ * Assert two JSON values are structurally equal.
+ * @param label - what the check proves.
+ * @param actual - produced value.
+ * @param expected - required value.
+ */
+function expectJson(label, actual, expected) {
+  expectEqual(label, JSON.stringify(actual), JSON.stringify(expected))
+}
+
+/**
+ * Run one async call and return the error it throws.
+ * @param run - the call expected to refuse its input.
+ * @returns the thrown error, or null when the call returned.
+ */
+async function capture(run) {
+  try {
+    await run()
+  } catch (error) {
+    return error
+  }
+  return null
+}
+
+/**
+ * Start one tool call and settle it separately, so a rejection observed later
+ * is never reported as an unhandled rejection.
+ * @param run - the call under test.
+ * @returns the settled-value promise.
+ */
+function settle(run) {
+  return Promise.resolve()
+    .then(run)
+    .then(value => ({ value }), error => ({ error }))
+}
+
+/**
+ * Sleep for a bounded time.
+ * @param ms - milliseconds.
+ * @returns a promise that resolves after the delay.
+ */
+function sleep(ms) {
+  return new Promise(resolveSleep => { setTimeout(resolveSleep, ms) })
+}
+
+/**
+ * Wait until a predicate holds or a deadline passes.
+ * @param predicate - condition to poll.
+ * @param timeoutMs - longest wait.
+ * @returns whether the predicate became true.
+ */
+async function waitFor(predicate, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return true
+    await sleep(10)
+  }
+  return predicate()
+}
+
+const here = dirname(fileURLToPath(import.meta.url))
+const home = await mkdtemp(join(tmpdir(), 'dsh-md2pdf-broker-home-'))
+const work = await mkdtemp(join(tmpdir(), 'dsh-md2pdf-broker-work-'))
+process.env['MD2PDF_HOME'] = home
+
+/** A payload every finish accepts. */
+const PDF = Buffer.from('%PDF-1.4\n%%EOF\n', 'latin1')
+
+const {
+  chooseToolEngine, exportTool, failPrintJob, finishExport, prepareExport,
+} = await import('../src/export.js')
+const { CLIENT_FAILURE_REASONS, createPrintJobs } = await import('../src/print-jobs.js')
+const indexModule = await import('../index.js')
+
+const {
+  FAIL_JOB_PATH, NEXT_JOB_PATH, brokerWaitSeconds,
+} = indexModule
+
+/**
+ * Build one fake response with close-listener support.
+ * @returns the response object.
+ */
+function fakeResponse() {
+  const listeners = new Map()
+  return {
+    statusCode: 0,
+    headers: {},
+    body: '',
+    ended: false,
+    setHeader(name, value) { this.headers[name.toLowerCase()] = value },
+    end(body = '') { this.body = body; this.ended = true },
+    once(name, listener) {
+      const list = listeners.get(name) ?? []
+      list.push(listener)
+      listeners.set(name, list)
+      return this
+    },
+    off(name, listener) {
+      const list = listeners.get(name)
+      if (list !== undefined) {
+        const index = list.indexOf(listener)
+        if (index >= 0) list.splice(index, 1)
+      }
+      return this
+    },
+    emit(name) {
+      for (const listener of [...(listeners.get(name) ?? [])]) listener()
+    },
+  }
+}
+
+/**
+ * Build one fake request.
+ * @param method - HTTP method.
+ * @param url - request URL.
+ * @param body - text body, or undefined.
+ * @param headers - request headers.
+ * @returns the request object.
+ */
+function fakeRequest(method, url, body, headers = {}) {
+  return {
+    method,
+    url,
+    headers,
+    async *[Symbol.asyncIterator]() {
+      if (body !== undefined) yield Buffer.from(body)
+    },
+  }
+}
+
+/**
+ * Call one mounted route and parse its JSON answer.
+ * @param routes - registered handlers by path.
+ * @param path - route path.
+ * @param req - fake request.
+ * @returns the status, parsed payload, and the response.
+ */
+async function callRoute(routes, path, req) {
+  const res = fakeResponse()
+  const handler = routes.get(path)
+  if (handler === undefined) return { status: 0, payload: null, res }
+  await handler(req, res)
+  return {
+    status: res.statusCode,
+    payload: res.body === '' ? null : JSON.parse(res.body),
+    res,
+  }
+}
+
+/**
+ * Mount the Host routes on a fake context, the form the checks use.
+ * @param config - row configuration, including the injected job store.
+ * @param rejection - status the trust fence returns; undefined accepts.
+ * @returns the registered handlers by path.
+ */
+function mountRoutes(config = {}, rejection = undefined) {
+  const routes = new Map()
+  const { apply } = indexModule
+  apply({
+    effect(register) {
+      register()
+      return () => {}
+    },
+    webServer: {
+      register(route) {
+        routes.set(route.path, route.handler)
+        return () => {}
+      },
+    },
+    connection: { requestRejection() { return rejection } },
+    tools: { register() { return () => {} } },
+    get() { return undefined },
+  }, config)
+  return routes
+}
+
+/**
+ * Wrap one store so the checks can inspect the jobs the exporter created.
+ * @param options - store options.
+ * @returns the wrapped store and the created jobs.
+ */
+function trackJobs(options = {}) {
+  const store = createPrintJobs(options)
+  const created = []
+  const jobs = {
+    ...store,
+    create(input) {
+      const job = store.create(input)
+      created.push(job)
+      return job
+    },
+  }
+  return { jobs, created }
+}
+
+/**
+ * Build one job input for the pure store checks.
+ * @param name - source and target stem.
+ * @param owner - `ui` or `tool`.
+ * @returns the job input.
+ */
+function jobInput(name, owner) {
+  return {
+    sessionId: 'session-1',
+    sourcePath: `/work/${name}.md`,
+    targetPath: `/work/${name}.pdf`,
+    html: `<h1>${name}</h1>`,
+    assetRoot: '/work',
+    printOptions: { printBackground: true },
+    owner,
+  }
+}
+
+/**
+ * Build a fake browser printer that writes one complete PDF.
+ * @param calls - array that records each run.
+ * @returns the printer function.
+ */
+function fakeBrowserPrinter(calls) {
+  return async (htmlPath, staging) => {
+    calls.push({ htmlPath, staging })
+    await writeFile(staging, PDF)
+    return { printer: 'fake-browser' }
+  }
+}
+
+try {
+  await copyFile(join(here, '..', 'samples', 'sample.md'), join(work, 'sample.md'))
+  const source = join(work, 'sample.md')
+  const target = join(work, 'sample.pdf')
+
+  // 1. Store: the tool queue claims only tool jobs, oldest first, one at a time.
+  let clock = 1_000_000
+  const store = createPrintJobs({ now: () => clock })
+  const uiFirst = store.create(jobInput('ui-first', 'ui'))
+  clock += 1
+  const toolFirst = store.create(jobInput('tool-first', 'tool'))
+  clock += 1
+  const toolSecond = store.create(jobInput('tool-second', 'tool'))
+
+  expectTrue('claimToolJob takes the oldest prepared tool job', store.claimToolJob() === toolFirst)
+  expectEqual('a claimed tool job records the state', toolFirst.state, 'claimed')
+  expectTrue('a claimed tool job records when it was claimed', typeof toolFirst.claimedAt === 'number')
+  expectEqual('a second active tool job is refused', store.claimToolJob(), null)
+  expectEqual('a UI job stays prepared while a tool job is active', uiFirst.state, 'prepared')
+  expectTrue('claimNext keeps its original FIFO order for UI', store.claimNext() === uiFirst)
+  expectEqual('claimNext claimed the UI job', uiFirst.state, 'claimed')
+
+  store.finish(toolFirst.finishToken, PDF)
+  expectTrue('the next tool job is claimable after the first finishes',
+    store.claimToolJob() === toolSecond)
+  expectEqual('a finished tool job is never claimed again', store.claimToolJob(), null)
+  store.markPrinting(toolSecond.finishToken)
+  clock += 1
+  const toolThird = store.create(jobInput('tool-third', 'tool'))
+  expectEqual('a printing tool job also blocks the next claim', store.claimToolJob(), null)
+  store.finish(toolSecond.finishToken, PDF)
+  expectTrue('the blocked job is claimable once the printing job finishes',
+    store.claimToolJob() === toolThird)
+  store.finish(toolThird.finishToken, PDF)
+  expectEqual('an empty tool queue returns null', store.claimToolJob(), null)
+
+  const uiOnly = createPrintJobs({ now: () => clock })
+  const lonelyUi = uiOnly.create(jobInput('lonely', 'ui'))
+  expectEqual('claimToolJob never claims a UI job', uiOnly.claimToolJob(), null)
+  expectEqual('the UI job stays prepared', lonelyUi.state, 'prepared')
+  expectTrue('claimNext still claims that UI job', uiOnly.claimNext() === lonelyUi)
+
+  const expiredStore = createPrintJobs({ now: () => clock })
+  const late = expiredStore.create(jobInput('late', 'tool'))
+  clock += 120_001
+  expectEqual('claimToolJob expires overdue work before claiming', expiredStore.claimToolJob(), null)
+  expectEqual('the overdue tool job is expired', late.state, 'expired')
+
+  const failedStore = createPrintJobs({ now: () => clock })
+  const failedTool = failedStore.create(jobInput('failed', 'tool'))
+  failedStore.fail(failedTool.id, 'client-error')
+  expectEqual('claimToolJob skips a failed tool job', failedStore.claimToolJob(), null)
+  const finishedStore = createPrintJobs({ now: () => clock })
+  const finishedTool = finishedStore.create(jobInput('finished', 'tool'))
+  finishedStore.finish(finishedTool.finishToken, PDF)
+  expectEqual('claimToolJob skips a finished tool job', finishedStore.claimToolJob(), null)
+
+  const mixedStore = createPrintJobs({ now: () => clock })
+  const uiBusy = mixedStore.create(jobInput('ui-busy', 'ui'))
+  mixedStore.claimNext()
+  mixedStore.markPrinting(uiBusy.finishToken)
+  const toolAfterUi = mixedStore.create(jobInput('tool-after-ui', 'tool'))
+  expectTrue('an active UI job never blocks a tool claim',
+    mixedStore.claimToolJob() === toolAfterUi)
+
+  // 2. Presence: one window, one key per client, pruned on record.
+  let presenceClock = 2_000_000
+  const presenceStore = createPrintJobs({ now: () => presenceClock })
+  presenceStore.presence.record('client-a')
+  expectTrue('a recorded client is present', presenceStore.presence.isPresent())
+  expectTrue('the client is present just inside 10 s', presenceStore.presence.isPresent(presenceClock + 9_999))
+  expectEqual('the client is absent at 10 s', presenceStore.presence.isPresent(presenceClock + 10_000), false)
+  expectEqual('the presence map holds one entry per key', presenceStore.presence.size(), 1)
+  presenceStore.presence.record('client-a')
+  expectEqual('recording the same key keeps one entry', presenceStore.presence.size(), 1)
+
+  presenceClock += 1
+  presenceStore.presence.record('client-b')
+  expectEqual('two live clients get two entries', presenceStore.presence.size(), 2)
+  presenceClock += 10_000
+  presenceStore.presence.record('client-c')
+  expectEqual('a new record prunes stale clients', presenceStore.presence.size(), 1)
+  expectTrue('the fresh client is present', presenceStore.presence.isPresent())
+  presenceClock += 10_000
+  expectEqual('prune reports and removes the stale entry', presenceStore.presence.prune(), 1)
+  expectEqual('the presence map is empty after prune', presenceStore.presence.size(), 0)
+  expectEqual('a pruned client is absent', presenceStore.presence.isPresent(), false)
+
+  const activePresence = createPrintJobs({ now: () => presenceClock })
+  const activeJob = activePresence.create(jobInput('active', 'tool'))
+  activePresence.claimToolJob()
+  presenceClock += 60_000
+  expectTrue('a claimed tool job counts as a present client', activePresence.presence.isPresent())
+  activePresence.markPrinting(activeJob.finishToken)
+  expectTrue('a printing tool job counts as a present client', activePresence.presence.isPresent())
+  activePresence.finish(activeJob.finishToken, PDF)
+  expectEqual('a finished tool job stops counting as presence', activePresence.presence.isPresent(), false)
+
+  const failedPresence = createPrintJobs({ now: () => presenceClock })
+  const failedActive = failedPresence.create(jobInput('failed-active', 'tool'))
+  failedPresence.claimToolJob()
+  failedPresence.fail(failedActive.id, 'client-error')
+  expectEqual('a failed tool job stops counting as presence', failedPresence.presence.isPresent(), false)
+
+  const closedPresence = createPrintJobs({ now: () => presenceClock })
+  closedPresence.presence.record('client-a')
+  await closedPresence.close()
+  expectEqual('close clears presence', closedPresence.presence.isPresent(), false)
+
+  // 3. Engine policy: a table, not a guess.
+  const policy = [
+    [{ printEngine: 'browser', clientPresent: false, browserAvailable: false }, 'browser'],
+    [{ printEngine: 'browser', clientPresent: true, browserAvailable: true }, 'browser'],
+    [{ printEngine: 'dsh', clientPresent: true, browserAvailable: false }, 'dsh'],
+    [{ printEngine: 'dsh', clientPresent: false, browserAvailable: true }, 'client-required'],
+    [{ printEngine: 'dsh', clientPresent: false, browserAvailable: false }, 'client-required'],
+    [{ printEngine: 'auto', clientPresent: true, browserAvailable: true }, 'dsh'],
+    [{ printEngine: 'auto', clientPresent: true, browserAvailable: false }, 'dsh'],
+    [{ printEngine: 'auto', clientPresent: false, browserAvailable: true }, 'browser'],
+    [{ printEngine: 'auto', clientPresent: false, browserAvailable: false }, 'no-printer'],
+    [{ printEngine: 'unknown', clientPresent: false, browserAvailable: false }, 'no-printer'],
+  ]
+  for (const [input, expected] of policy) {
+    expectEqual(`policy ${input.printEngine}/${input.clientPresent}/${input.browserAvailable}`,
+      chooseToolEngine(input), expected)
+  }
+
+  // 4. Tool execution: browser, client-required, no-printer, broker.
+  const browserCalls = []
+  const browserResult = await exportTool({ path: source }, {
+    printEngine: 'browser',
+    browserAvailable: true,
+    printBrowser: fakeBrowserPrinter(browserCalls),
+  })
+  expectEqual('a browser-configured tool exports with the browser', browserResult.engine, 'browser')
+  expectEqual('a browser tool result is exactly the tool shape',
+    Object.keys(browserResult).sort().join(','),
+    'bytes,durationMs,engine,generator,ok,pdfPath,sourcePath')
+
+  const noClientJobs = createPrintJobs()
+  const clientRequired = await capture(() => exportTool({ path: source }, {
+    jobs: noClientJobs,
+    printEngine: 'dsh',
+    browserAvailable: true,
+  }))
+  expectEqual('dsh without a client reports client-required', clientRequired?.code, 'client-required')
+  expectEqual('dsh without a client creates no print job', noClientJobs.claimToolJob(), null)
+
+  const autoBrowserCalls = []
+  const autoBrowserJobs = createPrintJobs()
+  const autoBrowser = await exportTool({ path: source }, {
+    jobs: autoBrowserJobs,
+    printEngine: 'auto',
+    browserAvailable: true,
+    printBrowser: fakeBrowserPrinter(autoBrowserCalls),
+  })
+  expectEqual('auto without a client falls back to the browser', autoBrowser.engine, 'browser')
+  expectEqual('auto without a client creates no broker job', autoBrowserJobs.claimToolJob(), null)
+  expectEqual('the browser fallback ran once', autoBrowserCalls.length, 1)
+
+  const noPrinterCalls = []
+  const noPrinter = await capture(() => exportTool({ path: source }, {
+    jobs: createPrintJobs(),
+    printEngine: 'auto',
+    browserAvailable: false,
+    printBrowser: fakeBrowserPrinter(noPrinterCalls),
+  }))
+  expectEqual('auto without a client or browser reports no-printer', noPrinter?.code, 'no-printer')
+  expectEqual('no-printer never starts the browser', noPrinterCalls.length, 0)
+
+  const assetServerJobs = createPrintJobs()
+  assetServerJobs.presence.record('client-a')
+  const assetServerCalls = []
+  const assetServer = await exportTool({ path: source }, {
+    jobs: assetServerJobs,
+    printEngine: 'auto',
+    browserAvailable: true,
+    printBrowser: fakeBrowserPrinter(assetServerCalls),
+    startPrintServer: async () => { throw new Error('no loopback port') },
+  })
+  expectEqual('asset-server-failed falls back to the browser in auto', assetServer.engine, 'browser')
+  expectEqual('the asset-server fallback starts the browser', assetServerCalls.length, 1)
+
+  const assetServerDshJobs = createPrintJobs()
+  assetServerDshJobs.presence.record('client-a')
+  const assetServerDsh = await capture(() => exportTool({ path: source }, {
+    jobs: assetServerDshJobs,
+    printEngine: 'dsh',
+    startPrintServer: async () => { throw new Error('no loopback port') },
+  }))
+  expectEqual('dsh mode never falls back after asset-server-failed',
+    assetServerDsh?.code, 'asset-server-failed')
+
+  // The broker path: the tool creates a tool-owned job, a client polls the
+  // route, fetches the print page, and returns PDF bytes through finish.
+  const broker = trackJobs()
+  const brokerRoutes = mountRoutes({ jobs: broker.jobs, browserAvailable: false })
+  broker.jobs.presence.record('client-a')
+  const finishCalls = []
+  const finishPrintBrowser = fakeBrowserPrinter(finishCalls)
+  const brokerSettled = settle(() => exportTool({ path: source, sessionId: 's1' }, {
+    jobs: broker.jobs,
+    printEngine: 'auto',
+    browserAvailable: true,
+    printBrowser: finishPrintBrowser,
+  }))
+  const brokerPoll = await callRoute(brokerRoutes, NEXT_JOB_PATH,
+    fakeRequest('GET', `${NEXT_JOB_PATH}?wait=2`))
+  expectEqual('the broker route answers a waiting tool job', brokerPoll.status, 200)
+  expectEqual('the broker route claimed the tool job', broker.created[0]?.state, 'claimed')
+  const printPage = await fetch(brokerPoll.payload.printUrl)
+  expectEqual('the print url serves the document', printPage.status, 200)
+  const finished = await finishExport({
+    finishToken: brokerPoll.payload.finishToken,
+    pdfBytes: PDF,
+  }, { jobs: broker.jobs })
+  expectEqual('finish returns the DSH engine', finished.engine, 'dsh')
+  const brokerReplay = await finishExport({
+    finishToken: brokerPoll.payload.finishToken,
+    pdfBytes: PDF,
+  }, { jobs: broker.jobs })
+  expectEqual('finish is idempotent for the brokered job', brokerReplay, finished)
+  const brokerOutcome = await brokerSettled
+  expectEqual('the tool returns success', brokerOutcome.value?.ok, true)
+  expectEqual('the tool reports the DSH engine', brokerOutcome.value?.engine, 'dsh')
+  expectEqual('the tool result has no preview address', Object.hasOwn(brokerOutcome.value ?? {}, 'previewAddress'), false)
+  expectEqual('the tool result has no open record', Object.hasOwn(brokerOutcome.value ?? {}, 'open'), false)
+  expectEqual('the tool result hides the print url', Object.hasOwn(brokerOutcome.value ?? {}, 'printUrl'), false)
+  expectEqual('the tool result hides the finish token', Object.hasOwn(brokerOutcome.value ?? {}, 'finishToken'), false)
+  expectEqual('the tool result hides the job id', Object.hasOwn(brokerOutcome.value ?? {}, 'jobId'), false)
+  expectEqual('a successful broker finish never falls back to the browser', finishCalls.length, 0)
+  expectEqual('the tool target stays beside the source', brokerOutcome.value?.pdfPath, target)
+  const printPageAfter = await fetch(brokerPoll.payload.printUrl).catch(() => null)
+  expectTrue('finish closes the print server', printPageAfter === null)
+
+  // A failed client print: dsh mode reports the failure; auto may fall back
+  // only for the allowlisted reasons.
+  const failClasses = [
+    ['print-failed', true],
+    ['client-required', true],
+    ['no-printer', true],
+    ['asset-server-failed', true],
+    ['file-busy', false],
+    ['pdf-invalid', false],
+  ]
+  for (const [reason, fallsBack] of failClasses) {
+    const run = trackJobs()
+    const routes = mountRoutes({ jobs: run.jobs, browserAvailable: true })
+    run.jobs.presence.record('client-a')
+    const calls = []
+    const settled = settle(() => exportTool({ path: source }, {
+      jobs: run.jobs,
+      printEngine: 'auto',
+      browserAvailable: true,
+      printBrowser: fakeBrowserPrinter(calls),
+    }))
+    const poll = await callRoute(routes, NEXT_JOB_PATH,
+      fakeRequest('GET', `${NEXT_JOB_PATH}?wait=2`))
+    await failPrintJob({ finishToken: poll.payload.finishToken, reason }, { jobs: run.jobs })
+    const outcome = await settled
+    expectEqual(`failure ${reason} uses the browser fallback`, calls.length, fallsBack ? 1 : 0)
+    if (fallsBack) {
+      expectEqual(`failure ${reason} returns a browser result`, outcome.value?.engine, 'browser')
+    } else {
+      expectEqual(`failure ${reason} keeps its error code`, outcome.error?.code, reason)
+    }
+  }
+
+  const dshFail = trackJobs()
+  const dshFailRoutes = mountRoutes({ jobs: dshFail.jobs, browserAvailable: true })
+  dshFail.jobs.presence.record('client-a')
+  const dshFailSettled = settle(() => exportTool({ path: source }, {
+    jobs: dshFail.jobs,
+    printEngine: 'dsh',
+    browserAvailable: true,
+    printBrowser: fakeBrowserPrinter([]),
+  }))
+  const dshFailPoll = await callRoute(dshFailRoutes, NEXT_JOB_PATH,
+    fakeRequest('GET', `${NEXT_JOB_PATH}?wait=2`))
+  await failPrintJob({ finishToken: dshFailPoll.payload.finishToken, reason: 'print-failed' }, { jobs: dshFail.jobs })
+  expectEqual('dsh mode never falls back after a client failure',
+    (await dshFailSettled).error?.code, 'print-failed')
+
+  // An unclaimed timeout: dsh reports job-timeout; auto falls back. The old PDF
+  // survives, no staging file remains, and the print server is closed.
+  await writeFile(target, PDF)
+  const timeoutRun = trackJobs({ timeoutMs: 120 })
+  timeoutRun.jobs.presence.record('client-a')
+  const timeoutSettled = settle(() => exportTool({ path: source }, {
+    jobs: timeoutRun.jobs,
+    printEngine: 'dsh',
+    browserAvailable: true,
+  }))
+  const timeoutOutcome = await timeoutSettled
+  expectEqual('an unclaimed dsh job reports job-timeout', timeoutOutcome.error?.code, 'job-timeout')
+  expectEqual('the timed-out job expired', timeoutRun.created[0]?.state, 'expired')
+  expectTrue('the timeout keeps the old PDF', (await readFile(target)).equals(PDF))
+  const stagedAfterTimeout = (await readdir(work)).filter(name => name.startsWith('.md2pdf-'))
+  expectEqual('the timeout leaves no staging file', stagedAfterTimeout.length, 0)
+  const timedOutPage = await fetch(timeoutRun.created[0].printUrl).catch(() => null)
+  expectTrue('the timeout closes the print server', timedOutPage === null)
+
+  const autoTimeoutRun = trackJobs({ timeoutMs: 120 })
+  autoTimeoutRun.jobs.presence.record('client-a')
+  const autoTimeoutCalls = []
+  const autoTimeout = await exportTool({ path: source }, {
+    jobs: autoTimeoutRun.jobs,
+    printEngine: 'auto',
+    browserAvailable: true,
+    printBrowser: fakeBrowserPrinter(autoTimeoutCalls),
+  })
+  expectEqual('an unclaimed auto timeout falls back to the browser', autoTimeout.engine, 'browser')
+  expectEqual('the unclaimed job is expired', autoTimeoutRun.created[0]?.state, 'expired')
+
+  const claimedTimeoutRun = trackJobs({ timeoutMs: 120 })
+  const claimedTimeoutRoutes = mountRoutes({ jobs: claimedTimeoutRun.jobs })
+  claimedTimeoutRun.jobs.presence.record('client-a')
+  const claimedTimeoutCalls = []
+  const claimedTimeoutSettled = settle(() => exportTool({ path: source }, {
+    jobs: claimedTimeoutRun.jobs,
+    printEngine: 'auto',
+    browserAvailable: true,
+    printBrowser: fakeBrowserPrinter(claimedTimeoutCalls),
+  }))
+  const claimedPoll = await callRoute(claimedTimeoutRoutes, NEXT_JOB_PATH,
+    fakeRequest('GET', `${NEXT_JOB_PATH}?wait=2`))
+  expectEqual('the claimed timeout test claimed its job', claimedPoll.status, 200)
+  const claimedOutcome = await claimedTimeoutSettled
+  expectEqual('a claimed timeout reports job-timeout', claimedOutcome.error?.code, 'job-timeout')
+  expectEqual('a claimed timeout never falls back to the browser', claimedTimeoutCalls.length, 0)
+  expectEqual('the claimed job expired', claimedTimeoutRun.created[0]?.state, 'expired')
+
+  const abortRun = trackJobs()
+  const abortRoutes = mountRoutes({ jobs: abortRun.jobs })
+  abortRun.jobs.presence.record('client-a')
+  const abortController = new AbortController()
+  const abortCalls = []
+  const abortSettled = settle(() => exportTool({ path: source }, {
+    jobs: abortRun.jobs,
+    printEngine: 'auto',
+    browserAvailable: true,
+    printBrowser: fakeBrowserPrinter(abortCalls),
+    signal: abortController.signal,
+  }))
+  const abortPoll = await callRoute(abortRoutes, NEXT_JOB_PATH,
+    fakeRequest('GET', `${NEXT_JOB_PATH}?wait=2`))
+  abortController.abort()
+  const abortOutcome = await abortSettled
+  expectEqual('an aborted tool call rejects with AbortError', abortOutcome.error?.name, 'AbortError')
+  expectEqual('an aborted job is failed', abortRun.created[0]?.state, 'failed')
+  expectEqual('an aborted tool call never falls back', abortCalls.length, 0)
+  const abortedPage = await fetch(abortRun.created[0].printUrl).catch(() => null)
+  expectTrue('an abort closes the print server', abortedPage === null)
+  expectEqual('an abort leaves no staging file',
+    (await readdir(work)).filter(name => name.startsWith('.md2pdf-')).length, 0)
+  expectEqual('the abort poll claimed the job', abortPoll.status, 200)
+
+  // 5. The long-poll route.
+  expectEqual('wait is 20 s by default', brokerWaitSeconds(undefined), 20)
+  expectEqual('an empty wait is 20 s', brokerWaitSeconds(''), 20)
+  expectEqual('a non-numeric wait is 20 s', brokerWaitSeconds('soon'), 20)
+  expectEqual('wait 0 is accepted', brokerWaitSeconds('0'), 0)
+  expectEqual('a negative wait clamps to 0', brokerWaitSeconds('-4'), 0)
+  expectEqual('wait maxes out at 30 s', brokerWaitSeconds('31'), 30)
+  expectEqual('a fractional wait survives', brokerWaitSeconds('2.5'), 2.5)
+
+  const routeRun = trackJobs()
+  const route = mountRoutes({ jobs: routeRun.jobs })
+  const noJob = await callRoute(route, NEXT_JOB_PATH,
+    fakeRequest('GET', `${NEXT_JOB_PATH}?wait=0`))
+  expectEqual('wait=0 answers 204 when no job is queued', noJob.status, 204)
+  expectEqual('the 204 answer is never cached', noJob.res.headers['cache-control'], 'no-store')
+
+  const wrongMethod = await callRoute(route, NEXT_JOB_PATH,
+    fakeRequest('POST', NEXT_JOB_PATH, '{}', { 'content-type': 'application/json' }))
+  expectEqual('the broker route is GET-only', wrongMethod.status, 405)
+  expectEqual('the 405 answer names the allowed method', wrongMethod.res.headers.allow, 'GET')
+
+  const fenceRun = trackJobs()
+  const beforeFence = await prepareExport({ path: source, owner: 'tool' }, { jobs: fenceRun.jobs })
+  const fenced = mountRoutes({ jobs: fenceRun.jobs }, 403)
+  const fencedGet = await callRoute(fenced, NEXT_JOB_PATH,
+    fakeRequest('GET', `${NEXT_JOB_PATH}?wait=1`))
+  expectEqual('the trust fence answers first', fencedGet.status, 403)
+  const fencedPost = await callRoute(fenced, NEXT_JOB_PATH,
+    fakeRequest('POST', NEXT_JOB_PATH, '{}', { 'content-type': 'application/json' }))
+  expectEqual('the fence precedes the method check', fencedPost.status, 403)
+  expectEqual('a fenced poll claims nothing', fenceRun.created[0].state, 'prepared')
+  await failPrintJob({ finishToken: beforeFence.finishToken, reason: 'client-error' }, { jobs: fenceRun.jobs })
+
+  const payloadRun = trackJobs()
+  const payloadRoutes = mountRoutes({ jobs: payloadRun.jobs })
+  const payloadSource = join(work, 'payload.md')
+  const payloadTarget = join(work, 'payload.pdf')
+  await writeFile(payloadSource, '# Payload\n\nA clean document.\n')
+  const payloadPrepared = await prepareExport({
+    path: payloadSource,
+    sessionId: 's 1',
+    owner: 'tool',
+    targetPath: '/tmp/not-the-target.pdf',
+  }, { jobs: payloadRun.jobs })
+  const payload = await callRoute(payloadRoutes, NEXT_JOB_PATH,
+    fakeRequest('GET', `${NEXT_JOB_PATH}?wait=0&targetPath=/tmp/evil&url=https://evil.example`))
+  expectEqual('a queued tool job answers 200', payload.status, 200)
+  const payloadKeys = Object.keys(payload.payload).sort()
+  expectJson('the payload carries only the client fields',
+    payloadKeys, ['finishToken', 'jobId', 'printOptions', 'printUrl', 'sessionId'])
+  expectEqual('the payload names the created job', payload.payload.jobId, payloadRun.created[0].id)
+  expectEqual('the payload carries the finish token', payload.payload.finishToken, payloadRun.created[0].finishToken)
+  expectEqual('the finish token is not the asset token', payload.payload.finishToken !== payloadRun.created[0].assetToken, true)
+  expectEqual('the print url is the job asset server', payload.payload.printUrl,
+    `http://127.0.0.1:${new URL(payload.payload.printUrl).port}/p/${payloadRun.created[0].assetToken}/document.html`)
+  expectEqual('the payload carries the print options',
+    payload.payload.printOptions.printBackground, true)
+  expectEqual('the payload carries the session id', payload.payload.sessionId, 's 1')
+  for (const forbidden of ['sourcePath', 'targetPath', 'assetRoot', 'assetToken', 'html', 'owner', 'state', 'deadline', 'failure', 'result']) {
+    expectEqual(`the payload never exposes ${forbidden}`,
+      Object.hasOwn(payload.payload, forbidden), false)
+  }
+  expectEqual('the target stays Host-computed', payloadRun.created[0].targetPath, payloadTarget)
+  expectEqual('the 200 answer is never cached', payload.res.headers['cache-control'], 'no-store')
+  expectEqual('the poll claimed the queued job', payloadRun.created[0].state, 'claimed')
+  const secondPoll = await callRoute(payloadRoutes, NEXT_JOB_PATH,
+    fakeRequest('GET', `${NEXT_JOB_PATH}?wait=0`))
+  expectEqual('a second poll gets 204 while the first job is active', secondPoll.status, 204)
+  await failPrintJob({ finishToken: payloadPrepared.finishToken, reason: 'client-error' }, { jobs: payloadRun.jobs })
+
+  const warningSource = join(work, 'warning.md')
+  await writeFile(warningSource, '---\npdf.unknown: x\n---\n\n# Warning\n\nBody.\n')
+  const warningRun = trackJobs()
+  const warningRoutes = mountRoutes({ jobs: warningRun.jobs })
+  const warningPrepared = await prepareExport({ path: warningSource, owner: 'tool' }, { jobs: warningRun.jobs })
+  const warningPoll = await callRoute(warningRoutes, NEXT_JOB_PATH,
+    fakeRequest('GET', `${NEXT_JOB_PATH}?wait=0`))
+  expectTrue('a job warning reaches the client', Array.isArray(warningPoll.payload.warnings))
+  expectEqual('the warning names the ignored key', warningPoll.payload.warnings?.[0], 'pdf.unknown')
+  await failPrintJob({ finishToken: warningPrepared.finishToken, reason: 'client-error' }, { jobs: warningRun.jobs })
+
+  const anonymousRun = trackJobs()
+  const anonymousRoutes = mountRoutes({ jobs: anonymousRun.jobs })
+  const anonymousPrepared = await prepareExport({ path: source, owner: 'tool' }, { jobs: anonymousRun.jobs })
+  const anonymousPoll = await callRoute(anonymousRoutes, NEXT_JOB_PATH,
+    fakeRequest('GET', `${NEXT_JOB_PATH}?wait=0`))
+  expectEqual('a job without a session omits the session id',
+    Object.hasOwn(anonymousPoll.payload, 'sessionId'), false)
+  await failPrintJob({ finishToken: anonymousPrepared.finishToken, reason: 'client-error' }, { jobs: anonymousRun.jobs })
+
+  const uiRun = trackJobs()
+  const uiRoutes = mountRoutes({ jobs: uiRun.jobs })
+  const uiJob = uiRun.jobs.create(jobInput('ui-only', 'ui'))
+  const uiPoll = await callRoute(uiRoutes, NEXT_JOB_PATH,
+    fakeRequest('GET', `${NEXT_JOB_PATH}?wait=0.1`))
+  expectEqual('the broker route ignores UI jobs', uiPoll.status, 204)
+  expectEqual('a UI job is never claimed by the broker', uiJob.state, 'prepared')
+
+  const arrivalRun = trackJobs()
+  const arrivalRoutes = mountRoutes({ jobs: arrivalRun.jobs })
+  const arrivalStarted = Date.now()
+  const arrivalPoll = callRoute(arrivalRoutes, NEXT_JOB_PATH,
+    fakeRequest('GET', `${NEXT_JOB_PATH}?wait=2`))
+  await sleep(40)
+  const arrivalPrepared = await prepareExport({ path: source, owner: 'tool' }, { jobs: arrivalRun.jobs })
+  const arrival = await arrivalPoll
+  expectEqual('the poll holds for a job that arrives later', arrival.status, 200)
+  expectTrue('the held poll returned before its deadline', Date.now() - arrivalStarted < 2000)
+  await failPrintJob({ finishToken: arrivalPrepared.finishToken, reason: 'client-error' }, { jobs: arrivalRun.jobs })
+
+  const waitRun = trackJobs()
+  const waitRoutes = mountRoutes({ jobs: waitRun.jobs })
+  const waitStarted = Date.now()
+  const waited = await callRoute(waitRoutes, NEXT_JOB_PATH,
+    fakeRequest('GET', `${NEXT_JOB_PATH}?wait=0.4`))
+  const waitedMs = Date.now() - waitStarted
+  expectEqual('an empty poll still answers 204', waited.status, 204)
+  expectTrue('the poll holds for the requested wait', waitedMs >= 380)
+
+  const closeRun = trackJobs()
+  const closeRoutes = mountRoutes({ jobs: closeRun.jobs })
+  const closeReq = fakeRequest('GET', `${NEXT_JOB_PATH}?wait=2`)
+  const closeRes = fakeResponse()
+  const closeStarted = Date.now()
+  const closing = closeRoutes.get(NEXT_JOB_PATH)(closeReq, closeRes)
+  await sleep(60)
+  closeRes.emit('close')
+  await closing
+  expectTrue('a closed connection stops the poll', Date.now() - closeStarted < 1000)
+  expectEqual('a closed poll answers nothing', closeRes.ended, false)
+
+  const heartbeatRun = trackJobs({ presenceMs: 120 })
+  const heartbeatRoutes = mountRoutes({ jobs: heartbeatRun.jobs, brokerHeartbeatMs: 40 })
+  const heartbeat = await callRoute(heartbeatRoutes, NEXT_JOB_PATH,
+    fakeRequest('GET', `${NEXT_JOB_PATH}?wait=0.3`))
+  expectEqual('the heartbeat poll answers 204', heartbeat.status, 204)
+  expectTrue('the heartbeat keeps the poller present', heartbeatRun.jobs.presence.isPresent())
+  expectEqual('every poll uses one fixed presence key', heartbeatRun.jobs.presence.size(), 1)
+  await sleep(160)
+  expectEqual('presence expires after the last heartbeat', heartbeatRun.jobs.presence.isPresent(), false)
+
+  // 6. The fail route.
+  await copyFile(source, join(work, 'fail.md'))
+  const failSource = join(work, 'fail.md')
+  const failRun = trackJobs()
+  const failRoutes = mountRoutes({ jobs: failRun.jobs })
+  const failPrepared = await prepareExport({ path: failSource, owner: 'tool' }, { jobs: failRun.jobs })
+  const failJob = failRun.created[0]
+  const failUrl = failPrepared.printUrl
+  const failBody = JSON.stringify({ finishToken: failJob.finishToken, reason: 'client-error' })
+
+  const failGet = await callRoute(failRoutes, FAIL_JOB_PATH, fakeRequest('GET', FAIL_JOB_PATH))
+  expectEqual('the fail route is POST-only', failGet.status, 405)
+  expectEqual('the fail 405 names POST', failGet.res.headers.allow, 'POST')
+  const failFence = mountRoutes({ jobs: failRun.jobs }, 403)
+  const fencedFail = await callRoute(failFence, FAIL_JOB_PATH, fakeRequest('POST', FAIL_JOB_PATH,
+    failBody, { 'content-type': 'application/json' }))
+  expectEqual('the fail route asks the fence first', fencedFail.status, 403)
+  expectEqual('a fenced fail never moves the job', failJob.state, 'prepared')
+
+  const wrongType = await callRoute(failRoutes, FAIL_JOB_PATH, fakeRequest('POST', FAIL_JOB_PATH,
+    failBody, { 'content-type': 'text/plain' }))
+  expectEqual('the fail route requires JSON', wrongType.status, 415)
+  const malformed = await callRoute(failRoutes, FAIL_JOB_PATH, fakeRequest('POST', FAIL_JOB_PATH,
+    '{', { 'content-type': 'application/json' }))
+  expectEqual('the fail route refuses a malformed body', malformed.status, 400)
+  const noReason = await callRoute(failRoutes, FAIL_JOB_PATH, fakeRequest('POST', FAIL_JOB_PATH,
+    JSON.stringify({ finishToken: failJob.finishToken }), { 'content-type': 'application/json' }))
+  expectEqual('the fail route requires a reason', noReason.status, 400)
+  const foreignReason = await callRoute(failRoutes, FAIL_JOB_PATH, fakeRequest('POST', FAIL_JOB_PATH,
+    JSON.stringify({ finishToken: failJob.finishToken, reason: 'hacked' }), { 'content-type': 'application/json' }))
+  expectEqual('the fail route refuses a reason outside the allowlist', foreignReason.status, 400)
+  expectTrue('the allowlist contains a client error', CLIENT_FAILURE_REASONS.includes('client-error'))
+  expectTrue('the allowlist excludes an unknown reason', !CLIENT_FAILURE_REASONS.includes('hacked'))
+  const assetFail = await callRoute(failRoutes, FAIL_JOB_PATH, fakeRequest('POST', FAIL_JOB_PATH,
+    JSON.stringify({ finishToken: failJob.assetToken, reason: 'client-error' }), { 'content-type': 'application/json' }))
+  expectEqual('the fail route refuses the asset token', assetFail.status, 400)
+  const idFail = await callRoute(failRoutes, FAIL_JOB_PATH, fakeRequest('POST', FAIL_JOB_PATH,
+    JSON.stringify({ finishToken: failJob.id, reason: 'client-error' }), { 'content-type': 'application/json' }))
+  expectEqual('the fail route refuses the job id', idFail.status, 400)
+  const unknownFail = await callRoute(failRoutes, FAIL_JOB_PATH, fakeRequest('POST', FAIL_JOB_PATH,
+    JSON.stringify({ finishToken: 'missing-token', reason: 'client-error' }), { 'content-type': 'application/json' }))
+  expectEqual('the fail route refuses an unknown token', unknownFail.status, 400)
+  expectEqual('refused fail calls leave the job prepared', failJob.state, 'prepared')
+  const stillOpen = await fetch(failUrl).catch(() => null)
+  expectEqual('a refused fail leaves the print server up', stillOpen?.status, 200)
+
+  const failOk = await callRoute(failRoutes, FAIL_JOB_PATH, fakeRequest('POST', FAIL_JOB_PATH,
+    failBody, { 'content-type': 'application/json' }))
+  expectEqual('the fail route accepts the exact finish token', failOk.status, 200)
+  expectEqual('the fail route reports ok', failOk.payload?.ok, true)
+  expectEqual('the fail route never exposes job fields',
+    Object.keys(failOk.payload ?? {}).sort().join(','), 'ok')
+  expectEqual('the failed job records the reason', failJob.failure?.reason, 'client-error')
+  expectEqual('the failed job state is failed', failJob.state, 'failed')
+  const failPage = await fetch(failUrl).catch(() => null)
+  expectTrue('the fail route closes the print server', failPage === null)
+  expectEqual('the fail route writes nothing', (await readdir(work)).includes('fail.pdf'), false)
+  const failAgain = await callRoute(failRoutes, FAIL_JOB_PATH, fakeRequest('POST', FAIL_JOB_PATH,
+    failBody, { 'content-type': 'application/json' }))
+  expectEqual('a repeated fail is idempotent', failAgain.status, 200)
+  expectEqual('a repeated fail keeps the first reason', failJob.failure?.reason, 'client-error')
+
+  const finishedRun = trackJobs()
+  const finishedRoutes = mountRoutes({ jobs: finishedRun.jobs })
+  const finishedPrepared = await prepareExport({ path: source, owner: 'tool' }, { jobs: finishedRun.jobs })
+  await finishExport({ finishToken: finishedPrepared.finishToken, pdfBytes: PDF }, { jobs: finishedRun.jobs })
+  const failedFinished = await callRoute(finishedRoutes, FAIL_JOB_PATH, fakeRequest('POST', FAIL_JOB_PATH,
+    JSON.stringify({ finishToken: finishedPrepared.finishToken, reason: 'client-error' }),
+    { 'content-type': 'application/json' }))
+  expectEqual('a finished job refuses a late fail', failedFinished.status, 409)
+  expectEqual('a late fail keeps the written target', finishedRun.created[0].state, 'finished')
+
+  const lateRun = trackJobs({ timeoutMs: 60 })
+  const lateRoutes = mountRoutes({ jobs: lateRun.jobs })
+  const latePrepared = await prepareExport({ path: source, owner: 'tool' }, { jobs: lateRun.jobs })
+  await sleep(100)
+  const lateFail = await callRoute(lateRoutes, FAIL_JOB_PATH, fakeRequest('POST', FAIL_JOB_PATH,
+    JSON.stringify({ finishToken: latePrepared.finishToken, reason: 'client-error' }),
+    { 'content-type': 'application/json' }))
+  expectEqual('an expired job refuses a late fail', lateFail.status, 504)
+
+  // A fail and a finish for the same job are serialized. The finish that
+  // started first wins; the fail refuses the committed result. The reverse
+  // order fails the job before the finish can write.
+  await copyFile(source, join(work, 'race.md'))
+  const raceFinishJobs = trackJobs()
+  const raceFinishPrepared = await prepareExport(
+    { path: join(work, 'race.md'), owner: 'tool' },
+    { jobs: raceFinishJobs.jobs },
+  )
+  const finishFirst = finishExport(
+    { finishToken: raceFinishPrepared.finishToken, pdfBytes: PDF },
+    { jobs: raceFinishJobs.jobs },
+  )
+  const failSecond = failPrintJob(
+    { finishToken: raceFinishPrepared.finishToken, reason: 'client-error' },
+    { jobs: raceFinishJobs.jobs },
+  )
+  const [finishFirstOutcome, failSecondOutcome] = await Promise.all([
+    finishFirst.then(value => ({ value }), error => ({ error })),
+    failSecond.then(value => ({ value }), error => ({ error })),
+  ])
+  expectEqual('a finish started first commits', finishFirstOutcome.value?.ok, true)
+  expectEqual('a concurrent fail refuses a committed job', failSecondOutcome.error?.code, 'state-conflict')
+  expectTrue('the committed PDF survives the refused fail',
+    (await readFile(join(work, 'race.pdf'))).equals(PDF))
+
+  await copyFile(source, join(work, 'race2.md'))
+  const raceFailJobs = trackJobs()
+  const raceFailPrepared = await prepareExport(
+    { path: join(work, 'race2.md'), owner: 'tool' },
+    { jobs: raceFailJobs.jobs },
+  )
+  const failFirst = failPrintJob(
+    { finishToken: raceFailPrepared.finishToken, reason: 'client-error' },
+    { jobs: raceFailJobs.jobs },
+  )
+  const finishSecond = finishExport(
+    { finishToken: raceFailPrepared.finishToken, pdfBytes: PDF },
+    { jobs: raceFailJobs.jobs },
+  )
+  const [failFirstOutcome, finishSecondOutcome] = await Promise.all([
+    failFirst.then(value => ({ value }), error => ({ error })),
+    finishSecond.then(value => ({ value }), error => ({ error })),
+  ])
+  expectEqual('a fail started first records failure', failFirstOutcome.value?.ok, true)
+  expectEqual('a later finish refuses a failed job', finishSecondOutcome.error?.code, 'state-conflict')
+  expectEqual('a refused finish writes no PDF', (await readdir(work)).includes('race2.pdf'), false)
+
+  // 7. The client wiring. The client is a classic script; the checks pin the
+  // source contract and leave the real DSH window to the manual run.
+  const client = await readFile(join(here, '..', 'client.js'), 'utf8')
+  expectTrue('the client defines the broker poll route', client.includes("md2pdf/print-jobs/next"))
+  expectTrue('the client defines the broker fail route', client.includes("md2pdf/print-jobs/fail"))
+  expectTrue('the client gates polling on dshPrinterAvailable', client.includes('dshPrinterAvailable()'))
+  expectTrue('the client reads the print engine', client.includes('printEngineOf'))
+  expectTrue('the client loads the brokered print url', client.includes('job.printUrl'))
+  expectTrue('the client prints with the brokered options', client.includes('job.printOptions'))
+  expectTrue('the client finishes with the brokered token', client.includes('job.finishToken'))
+  expectTrue('the client reports a broker failure by finish token', client.includes('reportBrokerFailure'))
+  expectTrue('the client send a reason with a broker failure', client.includes('finishToken, reason'))
+  expectTrue('the client stops the broker loop on dispose', client.includes('stopPrintBroker'))
+  expectTrue('the client aborts an in-flight poll', client.includes('.abort()'))
+  const brokerFunctionStart = client.indexOf('async function runBrokerPoll')
+  const brokerFunctionEnd = brokerFunctionStart < 0
+    ? -1
+    : client.indexOf('\n    }', brokerFunctionStart)
+  const brokerSource = brokerFunctionStart < 0 || brokerFunctionEnd < 0
+    ? ''
+    : client.slice(brokerFunctionStart, brokerFunctionEnd)
+  expectTrue('the broker loop exists', brokerSource !== '')
+  expectEqual('the broker loop never shows a toast', brokerSource.includes('notify('), false)
+  expectEqual('the broker loop never opens a preview', brokerSource.includes('openPreview'), false)
+  expectEqual('the broker loop never applies afterExport', brokerSource.includes('afterExport'), false)
+
+  const manifest = JSON.parse(await readFile(join(here, '..', 'package.json'), 'utf8'))
+  expectTrue('the test chain runs this check',
+    String(manifest.scripts.test).includes('scripts/broker-check.mjs'))
+} finally {
+  await rm(home, { recursive: true, force: true, maxRetries: 3 }).catch(() => {})
+  await rm(work, { recursive: true, force: true, maxRetries: 3 }).catch(() => {})
+}
+
+process.stdout.write(`\n${checks - failures}/${checks} checks passed\n`)
+process.exitCode = failures === 0 ? 0 : 1

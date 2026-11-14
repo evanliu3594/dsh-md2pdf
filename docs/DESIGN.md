@@ -150,9 +150,14 @@ Client 拿不到 DSH 打印器时，改调 `/md2pdf/export`。两条路径返回
   → POST /md2pdf/finish
   → Host 写盘、解析任务 Promise
   → 工具返回结果
+
+失败分支：Client → POST /md2pdf/print-jobs/fail { finishToken, reason }
+  → Host 置 failed、关闭资源服务、不写盘
 ```
 
 Host 记录最近一次客户端轮询时间。工具等待任务时，若 10 秒内没有客户端在场，回退浏览器；浏览器也不可用，返回 `no-printer`。Web GUI 没有 DSH 打印器，客户端不启动轮询；任务只能走浏览器。
+
+轮询默认持有 20 秒，入口记录一次在场，此后每 5 秒续一次；单个固定键，避免长轮询超过 10 秒在场窗口。
 
 任何已连接的 Desktop 客户端都可以认领工具任务，先到先得。工具任务不执行 `afterExport`，不打开预览，只返回路径。UI 导出由发起的客户端打印，`afterExport` 适用。用户切换会话不影响工具任务的写盘；预览只属于 UI 导出。
 
@@ -515,11 +520,12 @@ document.fonts.check('16px "Family"', 'A')
 | `/md2pdf/finish` | POST | 接收 PDF 字节并写盘 |
 | `/md2pdf/open` | POST | 用系统默认程序打开已完成 UI 任务的 PDF |
 | `/md2pdf/print-jobs/next` | GET | 客户端长轮询取任务 |
+| `/md2pdf/print-jobs/fail` | POST | 客户端报告工具任务失败 |
 | `/md2pdf/settings` | GET | 预设库、选中 CSS |
 | `/md2pdf/presets` | POST | 预设动作 |
 | `/md2pdf/previews` | GET | 缩略图页面 |
 
-每条路由先调用 `ctx.connection.requestRejection()`。`finish` 额外校验 `finishToken`；`open` 只接受 `finishToken`，只服务 UI 任务，目标由 Host 从任务解析，客户端不传路径、任务 id 或 URL；`print-jobs/next` 只返回未认领任务，客户端每次轮询由 connection fence 鉴权；`finish` 只接受 `application/pdf`，上限 64 MiB。
+每条路由先调用 `ctx.connection.requestRejection()`。`finish` 额外校验 `finishToken`；`open` 只接受 `finishToken`，只服务 UI 任务，目标由 Host 从任务解析，客户端不传路径、任务 id 或 URL；`print-jobs/next` 只返回未认领任务，客户端每次轮询由 connection fence 鉴权；`print-jobs/fail` 只接受任务的确切 `finishToken` 与白名单失败原因，把任务置为 `failed` 并关闭资源服务，不写盘；`finish` 只接受 `application/pdf`，上限 64 MiB。
 
 `prepare` 请求体：`{ path, sessionId?, preset?, page?, documentConfig? }`。`sessionId` 用于计算 `previewAddress`；没有它时不返回预览地址。`documentConfig` 只来自本次 UI 覆盖，不写回源文件。
 

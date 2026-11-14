@@ -16,8 +16,8 @@
 import { isAbsolute } from 'node:path'
 
 import {
-  describeCapability, exportMarkdownToPdf, finishExport, MARKDOWN_EXTENSIONS, openFinishedExport,
-  prepareExport,
+  describeCapability, exportMarkdownToPdf, exportTool, failPrintJob, finishExport, MARKDOWN_EXTENSIONS,
+  openFinishedExport, prepareExport, resolvePrintJobs,
 } from './src/export.js'
 import { fontFacesInCss, fontsInCss } from './src/font-css.js'
 import { openPath } from './src/opener.js'
@@ -37,6 +37,12 @@ export const PREPARE_PATH = '/md2pdf/prepare'
 
 /** Route accepting the PDF bytes a DSH client printed. */
 export const FINISH_PATH = '/md2pdf/finish'
+
+/** Route reporting a client-side print failure for one claimed job. */
+export const FAIL_JOB_PATH = '/md2pdf/print-jobs/fail'
+
+/** Route a connected DSH client long-polls for agent tool jobs. */
+export const NEXT_JOB_PATH = '/md2pdf/print-jobs/next'
 
 /** Route opening the committed PDF of one finished UI job with the system opener. */
 export const OPEN_PATH = '/md2pdf/open'
@@ -58,6 +64,21 @@ const MAX_BODY_BYTES = 1024 * 1024
 
 /** The PDF a client may return in one finish request. */
 const MAX_PDF_BYTES = 64 * 1024 * 1024
+
+/** How long a broker poll waits when the client sends no `wait`. */
+const BROKER_WAIT_DEFAULT_SECONDS = 20
+
+/** The longest the broker route may hold one request open. */
+const BROKER_WAIT_MAX_SECONDS = 30
+
+/** How often the broker route checks the queue while it holds. */
+const BROKER_POLL_MS = 100
+
+/** How often a held poll re-records the client presence. */
+const BROKER_HEARTBEAT_MS = 5000
+
+/** The one presence key the broker poll writes; polls never mint client keys. */
+const BROKER_PRESENCE_KEY = 'md2pdf-broker'
 
 /** The route carrier, the trust fence, and the tool registry. */
 export const inject = ['webServer', 'connection', 'tools']
@@ -228,6 +249,86 @@ function parseOpenBody(text) {
 }
 
 /**
+ * Parse the broker fail body.
+ *
+ * Only the finish token and the reason are read. The reason is checked against
+ * the closed client list by `failPrintJob`; a missing field is refused here so
+ * the route never guesses.
+ * @returns the request, or null when the body is unusable.
+ */
+function parseFailBody(text) {
+  let body
+  try {
+    body = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return null
+  if (typeof body.finishToken !== 'string' || body.finishToken.trim() === '') return null
+  if (typeof body.reason !== 'string' || body.reason === '') return null
+  return { finishToken: body.finishToken.trim(), reason: body.reason }
+}
+
+/**
+ * Resolve the broker poll's wait from the query string.
+ *
+ * An absent or non-numeric value keeps the 20 s default. Every other value is
+ * clamped to 0–30 s, so a client cannot pin a Host request open forever.
+ * @param raw - the `wait` query value, or undefined.
+ * @returns the wait in seconds.
+ */
+export function brokerWaitSeconds(raw) {
+  if (typeof raw !== 'string' || raw.trim() === '') return BROKER_WAIT_DEFAULT_SECONDS
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return BROKER_WAIT_DEFAULT_SECONDS
+  return Math.min(BROKER_WAIT_MAX_SECONDS, Math.max(0, value))
+}
+
+/**
+ * Read one query parameter from a request URL without trusting it.
+ * @param req - the HTTP request.
+ * @param name - parameter name.
+ * @returns the value, or undefined when absent or unparsable.
+ */
+function queryParameter(req, name) {
+  try {
+    const url = new URL(typeof req.url === 'string' ? req.url : '/', 'http://127.0.0.1')
+    return url.searchParams.get(name) ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Build the only payload a broker poll may return.
+ *
+ * The fields are named one by one, so the job's asset token, source, target,
+ * asset root, HTML, owner, and state cannot reach the client by accident.
+ * @param job - the claimed tool job.
+ * @returns the client payload.
+ */
+function brokerJobPayload(job) {
+  const payload = {
+    jobId: job.id,
+    printUrl: job.printUrl,
+    finishToken: job.finishToken,
+    printOptions: job.printOptions,
+  }
+  if (typeof job.sessionId === 'string' && job.sessionId !== '') payload.sessionId = job.sessionId
+  if (Array.isArray(job.warnings) && job.warnings.length > 0) payload.warnings = [...job.warnings]
+  return payload
+}
+
+/**
+ * Wait for one bounded interval.
+ * @param ms - milliseconds.
+ * @returns a promise that resolves after the delay.
+ */
+function brokerSleep(ms) {
+  return new Promise(resolveSleep => { setTimeout(resolveSleep, ms) })
+}
+
+/**
  * Read one Session's effective working directory from the Host's own services.
  * @param ctx - host context.
  * @param sessionId - the Session that reported the relative path.
@@ -285,6 +386,13 @@ export function apply(ctx, config) {
     timeoutMs: config?.timeoutMs,
     // Injectable opener for the checks; production uses the platform launcher.
     open: config?.open,
+    // The checks inject a store and a fake browser printer; production uses the
+    // process-wide store and the real Chromium printer.
+    jobs: config?.jobs,
+    browserAvailable: config?.browserAvailable,
+    printBrowser: config?.printBrowser,
+    startPrintServer: config?.startPrintServer,
+    brokerHeartbeatMs: config?.brokerHeartbeatMs,
   }
 
   ctx.effect(() => ctx.webServer.register({
@@ -501,6 +609,106 @@ export function apply(ctx, config) {
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
+    path: NEXT_JOB_PATH,
+    handler: async (req, res) => {
+      if (refused(ctx, req, res)) return
+      if (req.method !== 'GET') {
+        res.statusCode = 405
+        res.setHeader('allow', 'GET')
+        res.end()
+        return
+      }
+      const jobs = resolvePrintJobs(options)
+      const waitMs = brokerWaitSeconds(queryParameter(req, 'wait')) * 1000
+      const deadline = Date.now() + waitMs
+      const heartbeatMs = Number.isFinite(options.brokerHeartbeatMs) && options.brokerHeartbeatMs > 0
+        ? options.brokerHeartbeatMs
+        : BROKER_HEARTBEAT_MS
+      let closed = false
+      let heartbeat = null
+      const onClose = () => {
+        closed = true
+        if (heartbeat !== null) clearInterval(heartbeat)
+      }
+      if (typeof res.once === 'function') res.once('close', onClose)
+      heartbeat = setInterval(() => {
+        jobs.presence.record(BROKER_PRESENCE_KEY)
+      }, heartbeatMs)
+      if (typeof heartbeat.unref === 'function') heartbeat.unref()
+      try {
+        // Presence is recorded on entry, before the first claim, so a tool call
+        // that starts while this poll holds sees a connected client.
+        jobs.presence.record(BROKER_PRESENCE_KEY)
+        for (;;) {
+          if (closed) return
+          const job = jobs.claimToolJob()
+          if (job !== null) {
+            sendJson(res, 200, brokerJobPayload(job))
+            return
+          }
+          const remaining = deadline - Date.now()
+          if (remaining <= 0) {
+            res.statusCode = 204
+            res.setHeader('cache-control', 'no-store')
+            res.end()
+            return
+          }
+          await brokerSleep(Math.min(BROKER_POLL_MS, remaining))
+        }
+      } finally {
+        if (heartbeat !== null) clearInterval(heartbeat)
+        if (typeof res.off === 'function') res.off('close', onClose)
+      }
+    },
+  }), `md2pdf: GET ${NEXT_JOB_PATH}`)
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: FAIL_JOB_PATH,
+    handler: async (req, res) => {
+      if (refused(ctx, req, res)) return
+      if (req.method !== 'POST') {
+        res.statusCode = 405
+        res.setHeader('allow', 'POST')
+        res.end()
+        return
+      }
+      const essence = String(req.headers['content-type']).split(';', 1)[0]?.trim().toLowerCase()
+      if (essence !== 'application/json') {
+        sendJson(res, 415, { ok: false, code: 'unsupported-media-type', message: 'content-type must be application/json' })
+        return
+      }
+      let text
+      try {
+        text = await readBoundedBody(req)
+      } catch {
+        sendJson(res, 400, { ok: false, code: 'bad-request', message: 'request body unreadable' })
+        return
+      }
+      if (text === null) {
+        sendJson(res, 413, { ok: false, code: 'payload-too-large', message: 'request body is too large' })
+        return
+      }
+      const request = parseFailBody(text)
+      if (request === null) {
+        sendJson(res, 400, {
+          ok: false,
+          code: 'bad-request',
+          message: 'body must be JSON with a string "finishToken" and "reason"',
+        })
+        return
+      }
+      try {
+        sendJson(res, 200, await failPrintJob(request, options))
+      } catch (error) {
+        const failure = failureResponse(error)
+        sendJson(res, failure.status, { ok: false, ...failure })
+      }
+    },
+  }), `md2pdf: POST ${FAIL_JOB_PATH}`)
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
     path: OPEN_PATH,
     handler: async (req, res) => {
       if (refused(ctx, req, res)) return
@@ -619,16 +827,9 @@ export function apply(ctx, config) {
     async execute(args, exec) {
       const requested = typeof args?.path === 'string' ? args.path : ''
       const cwd = sessionDirectory(ctx, exec.agent?.id) ?? process.cwd()
-      const result = await exportMarkdownToPdf({ path: requested, cwd }, options)
-      return {
-        ok: result.ok,
-        pdfPath: result.pdfPath,
-        sourcePath: result.sourcePath,
-        bytes: result.bytes,
-        engine: result.engine,
-        generator: result.generator,
-        durationMs: result.durationMs,
-      }
+      // The broker chooses the client printer when one is present and the
+      // configured engine allows it; the signal cancels a queued tool job.
+      return exportTool({ path: requested, cwd }, { ...options, signal: exec.signal })
     },
   }), 'md2pdf: md2pdf_export tool')
 }

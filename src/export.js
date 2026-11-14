@@ -29,7 +29,7 @@ import { parseFrontmatter, splitFrontmatter } from './markdown.js'
 import { openPath } from './opener.js'
 import { pageMarginsInches, pageOverrideCss } from './page-css.js'
 import { describeEngines, PdfError, printBrowser, verifyPdf } from './pdf.js'
-import { createPrintJobs } from './print-jobs.js'
+import { CLIENT_FAILURE_REASONS, createPrintJobs } from './print-jobs.js'
 import { listPresets, presetCssPath, readPreset } from './presets.js'
 import { startPrintServer } from './print-server.js'
 
@@ -61,6 +61,31 @@ const LOCK_ERRORS = new Set(['EPERM', 'EBUSY', 'EACCES', 'EEXIST'])
 
 /** Staging ids are hex job ids; anything else would escape the directory. */
 const STAGING_ID = /^[a-z0-9-]{1,64}$/
+
+/** How often the tool watches a brokered job before checking again. */
+const TOOL_WATCH_MS = 100
+
+/**
+ * Failure reasons a tool may retry through the browser in `auto` mode.
+ *
+ * Every reason here means no file was written. `file-busy` and `pdf-invalid`
+ * are absent because the target may already hold a committed result.
+ */
+const TOOL_FALLBACK_REASONS = new Set([
+  'client-required',
+  'no-printer',
+  'print-failed',
+  'asset-server-failed',
+])
+
+/**
+ * Resolve the print-job store one operation should use.
+ * @param options - row configuration, possibly carrying a test store.
+ * @returns the injected store, or this process's shared store.
+ */
+export function resolvePrintJobs(options = {}) {
+  return options.jobs ?? defaultJobs
+}
 
 /**
  * @param {string} path - a source path.
@@ -507,7 +532,10 @@ export async function prepareExport(request = {}, options = {}) {
 
   let server
   try {
-    server = await startPrintServer({
+    const startServer = typeof options.startPrintServer === 'function'
+      ? options.startPrintServer
+      : startPrintServer
+    server = await startServer({
       html: rendered.html,
       assetRoot: directory,
       assetToken: job.assetToken,
@@ -525,6 +553,10 @@ export async function prepareExport(request = {}, options = {}) {
   const delay = Math.max(0, job.deadline - Date.now())
   const timer = setTimeout(() => { expirePrintServer(job.id) }, delay)
   if (typeof timer.unref === 'function') timer.unref()
+  // The broker route serves these two fields without reading the exporter's
+  // private maps: the printable URL of this job and the render warnings.
+  job.printUrl = `${server.url}document.html`
+  job.warnings = [...warnings]
   printServers.set(job.id, { jobs, close: server.close, timer, deadline: job.deadline })
   renderDetails.set(job.id, {
     generator: rendered.generator,
@@ -535,7 +567,7 @@ export async function prepareExport(request = {}, options = {}) {
 
   return {
     jobId: job.id,
-    printUrl: `${server.url}document.html`,
+    printUrl: job.printUrl,
     finishToken: job.finishToken,
     printOptions,
     warnings,
@@ -579,6 +611,52 @@ export async function finishExport({ finishToken, pdfBytes } = {}, options = {})
   } finally {
     await closePrintServer(job.id)
   }
+}
+
+/**
+ * Record a client-side failure for one open job and close its print server.
+ *
+ * The fail route is the client's other exit from a claimed job: when the guest
+ * cannot print, the client reports the reason instead of returning bytes. Only
+ * the exact finish token is accepted, so the asset token and the job id cannot
+ * end someone else's job. The reason must come from the closed client list.
+ * Nothing is written: a failed job leaves the old PDF and any staging file
+ * untouched, and the one-shot print server is closed before this resolves.
+ * @param input - `{ finishToken, reason }`.
+ * @param options - an injectable job store, for the checks.
+ * @returns `{ ok: true }` after the job has moved to `failed` and the server closed.
+ * @throws {PdfError} for a missing or foreign token, a reason outside the
+ *   allowlist, an expired job, or a job that already committed.
+ */
+export async function failPrintJob({ finishToken, reason } = {}, options = {}) {
+  if (typeof finishToken !== 'string' || finishToken.trim() === '') {
+    throw new PdfError('bad-request', 'finishToken is required')
+  }
+  if (!CLIENT_FAILURE_REASONS.includes(reason)) {
+    throw new PdfError('bad-request', 'the failure reason is not allowed')
+  }
+  const token = finishToken.trim()
+  const jobs = resolvePrintJobs(options)
+  const job = jobs.get(token)
+  if (job === null) throw new PdfError('bad-request', 'unknown finish token')
+  // `get` also matches the asset token and the job id; only the finish secret
+  // may end this job, and the refusal precedes the timer clear and the close.
+  if (job.finishToken !== token) throw new PdfError('bad-request', 'invalid finish token')
+  const entry = printServers.get(job.id)
+  if (entry !== undefined) clearTimeout(entry.timer)
+  try {
+    // Fail shares the finish chain. A finish already writing runs first, so a
+    // fail cannot mark the job failed while a rename is in flight; a fail that
+    // runs first makes the later finish refuse before it writes anything.
+    await serializeFinish(job.id, () => {
+      jobs.fail(job.id, reason)
+    })
+  } catch (error) {
+    throw exportFailure(error)
+  } finally {
+    await closePrintServer(job.id)
+  }
+  return { ok: true }
 }
 
 /**
@@ -725,6 +803,247 @@ export async function exportMarkdownToPdf(request, options = {}) {
   } finally {
     inFlight.delete(target)
   }
+}
+
+/**
+ * Choose the engine one agent tool call should use.
+ *
+ * This is the whole tool policy in one place. `browser` forces the Host's own
+ * Chromium printer. `dsh` only uses a connected client and reports
+ * `client-required` when none is present. `auto` uses the client when it is
+ * present and the browser otherwise; with neither, it reports `no-printer`.
+ * Presence is the store's 10 s client window, so the caller decides nothing.
+ * @param input - configured engine, client presence, and browser availability.
+ * @param input.printEngine - `auto`, `dsh`, `browser`, or an unknown value (auto).
+ * @param input.clientPresent - whether a client polled inside the presence window.
+ * @param input.browserAvailable - whether a browser executable was found.
+ * @returns `browser`, `dsh`, `client-required`, or `no-printer`.
+ */
+export function chooseToolEngine({ printEngine = 'auto', clientPresent = false, browserAvailable = false } = {}) {
+  if (printEngine === 'browser') return 'browser'
+  if (printEngine === 'dsh') return clientPresent === true ? 'dsh' : 'client-required'
+  return clientPresent === true ? 'dsh' : browserAvailable === true ? 'browser' : 'no-printer'
+}
+
+/**
+ * Normalize the configured tool print engine.
+ * @param value - row configuration value.
+ * @returns `auto`, `dsh`, or `browser`.
+ */
+function toolPrintEngine(value) {
+  return value === 'dsh' || value === 'browser' ? value : 'auto'
+}
+
+/**
+ * Report whether a browser printer can be resolved.
+ * @param options - row configuration plus the checks' explicit availability.
+ * @returns whether the browser fallback can run.
+ */
+async function browserAvailableFor(options) {
+  if (typeof options.browserAvailable === 'boolean') return options.browserAvailable
+  const engines = await describeEngines(options)
+  return engines.available.browser !== null
+}
+
+/**
+ * Map one export result onto the `md2pdf_export` schema.
+ *
+ * Only the fields the tool declares cross this boundary. The print URL, the
+ * finish token, the job id, warnings, and the preview address stay inside the
+ * Host; an agent receives a path and a few facts about the file.
+ * @param result - a DSH or browser export result.
+ * @returns the tool result.
+ */
+function toolResultOf(result) {
+  return {
+    ok: result.ok === true,
+    pdfPath: result.pdfPath,
+    sourcePath: result.sourcePath,
+    bytes: result.bytes,
+    engine: result.engine,
+    generator: result.generator,
+    durationMs: result.durationMs,
+  }
+}
+
+/**
+ * Build the cancellation error a tool call should throw.
+ * @param signal - the caller's abort signal, when one was supplied.
+ * @returns the signal's reason, or a new `AbortError`.
+ */
+function abortErrorOf(signal) {
+  if (signal !== undefined && signal.reason !== undefined) return signal.reason
+  const error = new Error('the tool call was aborted')
+  error.name = 'AbortError'
+  return error
+}
+
+/**
+ * Classify one watched job that has reached a terminal state.
+ * @param job - the job record.
+ * @returns the outcome, or null while the job is still open.
+ */
+function toolJobOutcome(job) {
+  if (job.state === 'finished') return { kind: 'finished', result: job.result }
+  if (job.state === 'failed') {
+    return {
+      kind: 'failed',
+      reason: typeof job.failure?.reason === 'string' && job.failure.reason !== ''
+        ? job.failure.reason
+        : 'print-failed',
+    }
+  }
+  if (job.state === 'expired') return { kind: 'expired' }
+  return null
+}
+
+/**
+ * Watch one brokered tool job until it ends, its deadline passes, or the
+ * caller's signal aborts.
+ *
+ * The store's expiry timer should end a job at its deadline, but this loop also
+ * runs the sweep itself, so a missed timer cannot leave the tool waiting past
+ * the deadline. `claimed` records whether a client ever took the job; only an
+ * unclaimed timeout may fall back to the browser in `auto` mode.
+ * @param jobs - the job store that owns the job.
+ * @param jobId - the job to watch.
+ * @param options - the caller's abort signal.
+ * @returns `finished`, `failed`, `expired`, or `aborted`, with `claimed`.
+ */
+async function waitForToolJob(jobs, jobId, { signal } = {}) {
+  let claimed = false
+  for (;;) {
+    const job = jobs.get(jobId)
+    if (job === null) return { kind: 'failed', reason: 'bad-request', claimed }
+    // `claimedAt` survives the transition out of `claimed`, so a job that timed
+    // out after a client took it can never be mistaken for an unclaimed one.
+    if (job.claimedAt !== undefined) claimed = true
+    if (job.state === 'claimed' || job.state === 'printing' || job.state === 'finished') claimed = true
+    const outcome = toolJobOutcome(job)
+    if (outcome !== null) return { ...outcome, claimed }
+    if (signal !== undefined && signal.aborted === true) return { kind: 'aborted', claimed }
+    const now = Date.now()
+    if (now >= job.deadline) {
+      jobs.expire(now)
+      const swept = jobs.get(jobId)
+      const ended = swept === null ? null : toolJobOutcome(swept)
+      return { ...(ended ?? { kind: 'expired' }), claimed }
+    }
+    await new Promise(resolveWait => { setTimeout(resolveWait, Math.min(TOOL_WATCH_MS, job.deadline - now)) })
+  }
+}
+
+/**
+ * Stop one abandoned tool job: fail it if still open, then close its server.
+ * @param jobs - the job store that owns the job.
+ * @param jobId - the abandoned job.
+ * @param reason - short internal reason recorded on the job.
+ * @returns a promise that resolves after the server is closed.
+ */
+async function abandonToolJob(jobs, jobId, reason) {
+  const job = jobs.get(jobId)
+  if (job !== null && (job.state === 'prepared' || job.state === 'claimed' || job.state === 'printing')) {
+    try {
+      jobs.fail(job.id, reason)
+    } catch {
+      // The job is already unusable; the close below still has to run.
+    }
+  }
+  await closePrintServer(jobId)
+}
+
+/**
+ * Run one tool export through the browser fallback after a broker failure.
+ * @param request - the export request.
+ * @param options - row configuration, including the injected browser printer.
+ * @returns the browser export result.
+ * @throws {PdfError} `no-printer` when no browser is available.
+ */
+async function browserFallbackTool(request, options) {
+  if (options.signal !== undefined && options.signal.aborted === true) throw abortErrorOf(options.signal)
+  if (!await browserAvailableFor(options)) {
+    throw new PdfError('no-printer', 'the DSH client could not print and no browser is available')
+  }
+  return exportMarkdownToPdf(request, options)
+}
+
+/**
+ * Export one markdown file for the agent tool.
+ *
+ * The tool has no client object of its own, so it hands the work to a
+ * connected DSH client through the print-job queue. The engine policy decides
+ * whether a client is used; the job watcher returns the committed result. In
+ * `auto` mode a failure that cannot have written the target falls back to the
+ * browser. A successful finish never falls back, and neither do `file-busy`
+ * and `pdf-invalid`, because the target may already hold a result.
+ *
+ * The caller's `signal` is forwarded: an aborted tool call fails its job,
+ * closes the loopback server, and rejects with the signal's reason, so no
+ * orphan temp file or listening socket survives the cancellation.
+ * @param request - `{ path, cwd?, preset?, page?, documentConfig? }`.
+ * @param options - row configuration, the job store, an optional abort signal,
+ *   and the checks' injected browser printer.
+ * @returns the `md2pdf_export` result: `{ ok, pdfPath, sourcePath, bytes, engine,
+ *   generator, durationMs }`.
+ * @throws {PdfError} for every refusal, failure, or timeout the agent can act on.
+ */
+export async function exportTool(request = {}, options = {}) {
+  const signal = options.signal
+  if (signal !== undefined && signal.aborted === true) throw abortErrorOf(signal)
+  const jobs = resolvePrintJobs(options)
+  const printEngine = toolPrintEngine(options.printEngine)
+  const browserAvailable = printEngine === 'auto' ? await browserAvailableFor(options) : false
+  const choice = chooseToolEngine({
+    printEngine,
+    clientPresent: jobs.presence.isPresent(),
+    browserAvailable,
+  })
+  if (choice === 'client-required') {
+    throw new PdfError('client-required', 'no DSH client is connected and the DSH printer is required')
+  }
+  if (choice === 'no-printer') {
+    throw new PdfError('no-printer', 'no DSH client is connected and no browser is available')
+  }
+  if (choice === 'browser') return toolResultOf(await exportMarkdownToPdf(request, options))
+
+  let prepared
+  try {
+    prepared = await prepareExport({ ...request, owner: 'tool' }, options)
+  } catch (error) {
+    // A loopback server that cannot start is the one pre-job failure the
+    // design lets `auto` retry through the browser.
+    if (printEngine === 'auto' && error instanceof PdfError && error.code === 'asset-server-failed') {
+      return toolResultOf(await browserFallbackTool(request, options))
+    }
+    throw error
+  }
+  const jobId = prepared.jobId
+  let outcome
+  try {
+    outcome = await waitForToolJob(jobs, jobId, { signal })
+  } catch (error) {
+    await abandonToolJob(jobs, jobId, 'client-error')
+    throw error
+  }
+  if (outcome.kind === 'aborted') {
+    await abandonToolJob(jobs, jobId, 'client-error')
+    throw abortErrorOf(signal)
+  }
+  if (outcome.kind === 'finished') return toolResultOf(outcome.result)
+
+  // The job is failed or expired, so nothing will commit; close the one-shot
+  // server before a possible browser run starts its own printer.
+  await closePrintServer(jobId)
+  if (outcome.kind === 'failed') {
+    if (printEngine === 'auto' && TOOL_FALLBACK_REASONS.has(outcome.reason)) {
+      return toolResultOf(await browserFallbackTool(request, options))
+    }
+    throw new PdfError(outcome.reason, `the DSH client could not print the document: ${outcome.reason}`)
+  }
+  if (printEngine === 'auto' && outcome.claimed !== true) {
+    return toolResultOf(await browserFallbackTool(request, options))
+  }
+  throw new PdfError('job-timeout', 'the print job timed out before a client finished it')
 }
 
 /**

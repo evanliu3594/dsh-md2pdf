@@ -48,6 +48,24 @@ const PDF_TRAILER_BYTES = 2048
 const OPEN_STATES = new Set(['prepared', 'claimed', 'printing'])
 
 /**
+ * Reasons a client may report through the broker's fail route.
+ *
+ * The list is closed so a caller cannot write arbitrary text into a job's
+ * failure record. A reason the list does not name is refused by the route and
+ * replaced by `client-error` on the client.
+ */
+export const CLIENT_FAILURE_REASONS = Object.freeze([
+  'client-error',
+  'client-required',
+  'no-printer',
+  'print-failed',
+  'pdf-invalid',
+  'file-busy',
+  'job-timeout',
+  'asset-server-failed',
+])
+
+/**
  * Build one named store error with both the project code and an HTTP status.
  * @param code - stable machine code, such as `pdf-invalid`.
  * @param status - HTTP status the finish route should answer with.
@@ -144,14 +162,50 @@ export function createPrintJobs({
   }
 
   /**
+   * Mark one prepared job claimed and record when that happened.
+   *
+   * `claimedAt` outlives the `claimed` state, so a watcher can tell a job that
+   * timed out after a client took it from one that was never picked up.
+   * @param job - the prepared job.
+   * @returns the same job in `claimed`.
+   */
+  function takeClaim(job) {
+    job.state = 'claimed'
+    job.claimedAt = clock()
+    return job
+  }
+
+  /**
    * Claim the oldest prepared job.
    * @returns the claimed job, or null when the queue holds only finished work.
    */
   function claimNext() {
     for (const job of jobs.values()) {
       if (job.state !== 'prepared') continue
-      job.state = 'claimed'
-      return job
+      return takeClaim(job)
+    }
+    return null
+  }
+
+  /**
+   * Claim the oldest prepared tool job.
+   *
+   * The broker prints one tool job at a time. A tool job that is already
+   * claimed or printing means the client is still busy, so a second tool job
+   * waits even when it is older in the queue. UI jobs never participate; they
+   * are printed by the client that created them. Overdue work expires first,
+   * so a job past its deadline is never handed out.
+   * @returns the claimed tool job, or null when none is ready.
+   */
+  function claimToolJob() {
+    expire()
+    for (const job of jobs.values()) {
+      if (job.owner !== 'tool') continue
+      if (job.state === 'claimed' || job.state === 'printing') return null
+    }
+    for (const job of jobs.values()) {
+      if (job.owner !== 'tool' || job.state !== 'prepared') continue
+      return takeClaim(job)
     }
     return null
   }
@@ -290,26 +344,65 @@ export function createPrintJobs({
   const presence = {
     /**
      * Mark a client present now.
+     *
+     * Recording also drops every entry older than the presence window, so a
+     * long-lived Host does not accumulate dead keys.
      * @param clientId - stable identifier for the polling client.
      * @returns the recorded timestamp.
      */
     record(clientId) {
       const at = clock()
-      lastSeen.set(clientId, at)
+      const key = typeof clientId === 'string' && clientId !== '' ? clientId : 'client'
+      for (const [seenId, seenAt] of lastSeen) {
+        if (at - seenAt >= presenceMs) lastSeen.delete(seenId)
+      }
+      lastSeen.set(key, at)
       return at
     },
 
     /**
      * Report whether any client was seen inside the presence window.
+     *
+     * A tool job in `claimed` or `printing` also counts: the client that took
+     * it is busy printing and only returns to polling afterwards, so the
+     * heartbeat stops while the work is live.
      * @param instant - clock reading to compare against; defaults to the current time.
-     * @returns true when a recorded client is still present.
+     * @returns true when a recorded client or an active tool job is present.
      */
     isPresent(instant = clock()) {
       const at = Number.isFinite(instant) ? instant : clock()
+      for (const job of jobs.values()) {
+        if (job.owner === 'tool' && (job.state === 'claimed' || job.state === 'printing')) return true
+      }
       for (const seenAt of lastSeen.values()) {
         if (at - seenAt < presenceMs) return true
       }
       return false
+    },
+
+    /**
+     * Drop every record older than the presence window.
+     * @param instant - clock reading to compare against; defaults to the current time.
+     * @returns how many records were removed.
+     */
+    prune(instant = clock()) {
+      const at = Number.isFinite(instant) ? instant : clock()
+      let removed = 0
+      for (const [seenId, seenAt] of lastSeen) {
+        if (at - seenAt >= presenceMs) {
+          lastSeen.delete(seenId)
+          removed += 1
+        }
+      }
+      return removed
+    },
+
+    /**
+     * Report how many client records are tracked.
+     * @returns the size of the presence map.
+     */
+    size() {
+      return lastSeen.size
     },
   }
 
@@ -324,5 +417,7 @@ export function createPrintJobs({
     }
   }
 
-  return { create, claimNext, markPrinting, fail, finish, expire, get, presence, close }
+  return {
+    create, claimNext, claimToolJob, markPrinting, fail, finish, expire, get, presence, close,
+  }
 }
