@@ -127,11 +127,11 @@ const work = await mkdtemp(join(tmpdir(), 'dsh-md2pdf-export-work-'))
 process.env['MD2PDF_HOME'] = home
 
 const {
-  atomicWritePdf, finishExport, prepareExport, sessionFileAddress, verifyPdf,
+  atomicWritePdf, exportMarkdownToPdf, finishExport, prepareExport, sessionFileAddress, verifyPdf,
 } = await import('../src/export.js')
 const { createPrintJobs } = await import('../src/print-jobs.js')
 const { describeEngines, printBrowser } = await import('../src/pdf.js')
-const { savePresetPage } = await import('../src/presets.js')
+const { savePresetPage, selectPreset } = await import('../src/presets.js')
 const { scanAssets } = await import('../src/asset-scan.js')
 
 const PDF = Buffer.from('%PDF-1.4\n%%EOF\n', 'latin1')
@@ -454,6 +454,94 @@ try {
     expectEqual('an asset reached through a symlink is warned',
       linkedWarnings.some(warning => warning.includes('asset-link.png')), true)
   }
+
+  // The browser fallback applies the same page model as the DSH path: selected
+  // preset page metadata, then the file's front matter, then the request page;
+  // a request preset outranks `pdf.preset`, which outranks the selected preset.
+  // The printer is injected so the rendered HTML can be inspected without
+  // launching a browser; a failing executable stands in if the injection is
+  // ever bypassed.
+  const fallbackCalls = []
+  const fallbackPrinter = async (htmlPath, outPath) => {
+    fallbackCalls.push(await readFile(htmlPath, 'utf8'))
+    await writeFile(outPath, PDF)
+    return { engine: 'browser', printer: 'fake-browser', bytes: PDF.byteLength }
+  }
+  const failingBrowser = join(work, 'failing-browser')
+  await writeFile(failingBrowser, `#!${process.execPath}\nprocess.exit(1)\n`, { mode: 0o755 })
+  const fallbackOptions = {
+    browserPath: failingBrowser,
+    printBrowser: fallbackPrinter,
+    timeoutMs: 2_000,
+  }
+
+  await selectPreset('paper')
+  const fallbackPreset = await outcome(() => exportMarkdownToPdf({ path: source }, fallbackOptions))
+  expectEqual('the fallback exports the file', fallbackPreset.value?.ok, true)
+  expectEqual('the fallback reports the browser engine', fallbackPreset.value?.engine, 'browser')
+  expectEqual('the fallback writes beside the source',
+    fallbackPreset.value?.pdfPath, join(work, 'sample.pdf'))
+  expectEqual('the fallback keeps the existing response shape',
+    Object.keys(fallbackPreset.value ?? {}).sort().join(','),
+    'bytes,durationMs,engine,generator,math,ok,pdfPath,printer,sourcePath,theme')
+  expectEqual('the fallback applies the selected preset page metadata',
+    fallbackCalls.at(-1)?.includes('<style id="md2pdf-page">\n@page{margin:20mm}\n</style>'), true)
+  expectEqual('the fallback reports the selected preset', fallbackPreset.value?.theme, 'paper')
+
+  const fallbackFront = join(work, 'fallback-frontmatter.md')
+  await writeFile(fallbackFront, [
+    '---',
+    'pdf.page.marginMm: 30',
+    'pdf.page.fontSize: 13',
+    '---',
+    '',
+    '# Fallback front matter',
+    '',
+  ].join('\n'))
+  const fallbackFrontRun = await outcome(() => exportMarkdownToPdf({ path: fallbackFront }, fallbackOptions))
+  expectEqual('the fallback renders a front matter file', fallbackFrontRun.value?.ok, true)
+  expectEqual('fallback front matter outranks the preset page',
+    fallbackCalls.at(-1)?.includes('<style id="md2pdf-page">\n@page{margin:30mm}\nbody{font-size:13px}\n</style>'), true)
+
+  const fallbackDeclared = join(work, 'fallback-declared.md')
+  await writeFile(fallbackDeclared, '---\npdf.preset: gongwen\n---\n\n# Fallback preset\n')
+  const fallbackDeclaredRun = await outcome(() => exportMarkdownToPdf({ path: fallbackDeclared }, fallbackOptions))
+  expectEqual('the fallback honours the front matter preset', fallbackDeclaredRun.value?.theme, 'gongwen')
+  expectEqual('the fallback uses the front matter preset stylesheet',
+    fallbackCalls.at(-1)?.includes('color: #e60012'), true)
+  expectEqual('font-only preset metadata reaches the fallback page layer',
+    fallbackCalls.at(-1)?.includes('<style id="md2pdf-page">\nbody{font-size:12px}\n</style>'), true)
+
+  const fallbackRequestPreset = await outcome(() => exportMarkdownToPdf(
+    { path: fallbackDeclared, preset: 'paper' }, fallbackOptions))
+  expectEqual('a fallback request preset outranks the front matter preset',
+    fallbackRequestPreset.value?.theme, 'paper')
+  expectEqual('the fallback request preset stylesheet is used',
+    fallbackCalls.at(-1)?.includes('color: #e60012'), false)
+  expectEqual('the fallback request preset page metadata is used',
+    fallbackCalls.at(-1)?.includes('<style id="md2pdf-page">\n@page{margin:20mm}\n</style>'), true)
+
+  const fallbackRequestPage = await outcome(() => exportMarkdownToPdf(
+    { path: fallbackFront, page: { marginMm: 12 } }, fallbackOptions))
+  expectEqual('a fallback request page outranks front matter', fallbackRequestPage.value?.ok, true)
+  expectEqual('the fallback request page is the last page layer',
+    fallbackCalls.at(-1)?.includes('<style id="md2pdf-page">\n@page{margin:12mm}\nbody{font-size:13px}\n</style>'), true)
+
+  await selectPreset('lark')
+  const fallbackEmptyPage = await outcome(() => exportMarkdownToPdf(
+    { path: source, page: {} }, fallbackOptions))
+  expectEqual('an empty fallback page adds no override', fallbackEmptyPage.value?.ok, true)
+  expectEqual('an empty fallback page emits no page style',
+    fallbackCalls.at(-1)?.includes('<style id="md2pdf-page">'), false)
+
+  const fallbackCallsBefore = fallbackCalls.length
+  const fallbackBadSize = await outcome(() => exportMarkdownToPdf(
+    { path: source, page: { size: 'B5' } }, fallbackOptions))
+  expectEqual('the fallback refuses an invalid page', fallbackBadSize.error?.code, 'bad-request')
+  const fallbackBadField = await outcome(() => exportMarkdownToPdf(
+    { path: source, page: { bleed: 3 } }, fallbackOptions))
+  expectEqual('the fallback refuses an unknown page field', fallbackBadField.error?.code, 'bad-request')
+  expectEqual('a refused fallback page never prints', fallbackCalls.length, fallbackCallsBefore)
 
   // The browser fallback is still exported and reports only the browser engine.
   expectEqual('the browser printer is exported', typeof printBrowser, 'function')

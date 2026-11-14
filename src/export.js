@@ -100,27 +100,39 @@ function targetOf(sourcePath) {
 }
 
 /**
- * Coerce one page option, keeping the stylesheet inside values Chromium accepts.
+ * Resolve the preset and the effective page for one markdown document.
  *
- * This is the browser fallback's one-off page shape. The DSH path uses the
- * partial `PageOverride` model instead, so an unset field never rewrites the
- * preset's `@page` box.
- * @param page - caller-supplied overrides.
- * @returns the effective page geometry.
+ * This is the one page-precedence rule both export paths use. The preset is
+ * chosen by the request, then the file's `pdf.preset`, then the selected
+ * preset. The page merges, lowest to highest, the chosen preset's saved page
+ * metadata, the file's flat `pdf.page.*` front matter, and the request's
+ * explicit override. Only fields a layer sets participate, so a font-size-only
+ * override leaves the preset's own `@page` box in charge.
+ * @param markdown - the complete source text.
+ * @param request - `{ preset?, page?, documentConfig? }`.
+ * @param fallbackPage - process-level page used only when the request sets none.
+ * @returns the preset, the effective partial page, and the front matter warnings.
+ * @throws {PdfError} for an unknown preset, an invalid page, or invalid front
+ *   matter.
  */
-function normalizePage(page) {
-  const source = page ?? {}
-  const size = typeof source.size === 'string' && /^[A-Za-z0-9]+$/.test(source.size)
-    ? source.size
-    : DEFAULT_PAGE.size
-  const margin = Number(source.marginMm)
-  const fontSize = Number(source.fontSize)
-  return {
-    size,
-    marginMm: Number.isFinite(margin) ? Math.min(Math.max(margin, 0), 60) : DEFAULT_PAGE.marginMm,
-    fontSize: Number.isFinite(fontSize) ? Math.min(Math.max(fontSize, 8), 24) : DEFAULT_PAGE.fontSize,
-    landscape: source.landscape === true,
-  }
+async function resolveDocumentSetup(markdown, request, fallbackPage) {
+  const { frontmatter } = splitFrontmatter(markdown)
+  const fields = parseFrontmatter(frontmatter)
+
+  const { selected } = await listPresets()
+  const requestedPreset = typeof request?.preset === 'string' && request.preset !== '' ? request.preset : null
+  const declaredPreset = typeof fields['pdf.preset'] === 'string' && fields['pdf.preset'] !== ''
+    ? fields['pdf.preset']
+    : null
+  const presetId = requestedPreset ?? declaredPreset ?? selected
+  const preset = await readPreset(presetId)
+
+  const merged = mergeDocumentConfig({
+    presetPage: preset.page ?? {},
+    frontmatter: fields,
+    request: { page: request?.page ?? fallbackPage, documentConfig: request?.documentConfig },
+  })
+  return { preset, page: merged.page, warnings: merged.warnings }
 }
 
 /**
@@ -424,27 +436,10 @@ export async function prepareExport(request = {}, options = {}) {
   const stem = name.slice(0, name.length - extname(name).length)
   const jobs = options.jobs ?? defaultJobs
 
-  const { frontmatter } = splitFrontmatter(markdown)
-  const fields = parseFrontmatter(frontmatter)
-
-  const { selected } = await listPresets()
-  const requestedPreset = typeof request?.preset === 'string' && request.preset !== '' ? request.preset : null
-  const declaredPreset = typeof fields['pdf.preset'] === 'string' && fields['pdf.preset'] !== ''
-    ? fields['pdf.preset']
-    : null
-  const presetId = requestedPreset ?? declaredPreset ?? selected
-  const preset = await readPreset(presetId)
-
-  // The page layers, low to high: the preset's saved page metadata, the file's
-  // flat `pdf.page.*` front matter, and this request's explicit override. Only
-  // fields a layer sets participate, so a font-size-only override leaves the
-  // preset's own `@page` box in charge.
-  const merged = mergeDocumentConfig({
-    presetPage: preset.page ?? {},
-    frontmatter: fields,
-    request: { page: request?.page, documentConfig: request?.documentConfig },
-  })
-  const page = merged.page
+  // The preset and page precedence are shared with the browser fallback:
+  // request preset > `pdf.preset` > selected, and preset page < front matter
+  // page < request page. Only explicit page fields participate.
+  const { preset, page, warnings: mergeWarnings } = await resolveDocumentSetup(markdown, request)
 
   const rendered = await renderDocument({
     markdown,
@@ -458,7 +453,7 @@ export async function prepareExport(request = {}, options = {}) {
 
   // Unknown `pdf.*` keys and unresolvable asset references are warnings: the
   // PDF still prints, and the client reports what was skipped.
-  const warnings = [...merged.warnings, ...await scanAssets(rendered.html, directory)]
+  const warnings = [...mergeWarnings, ...await scanAssets(rendered.html, directory)]
 
   const printOptions = {
     printBackground: true,
@@ -557,11 +552,14 @@ export async function finishExport({ finishToken, pdfBytes } = {}, options = {})
  * Export one markdown file to a PDF in the same directory through a browser.
  *
  * This is the fallback used by the Web GUI, the agent tool while no DSH client
- * is present, and any install without the DSH printer. The browser writes to a
- * staging file; the bytes are validated and renamed into place, so a failed
- * printer never replaces a complete old PDF.
- * @param request - `{ path, cwd?, page?, browserPath? }`.
- * @param options - process-level defaults merged under the request.
+ * is present, and any install without the DSH printer. It applies the same
+ * preset and page precedence as the DSH path: request preset > `pdf.preset` >
+ * selected, and preset page < front matter page < request page. The browser
+ * writes to a staging file; the bytes are validated and renamed into place, so
+ * a failed printer never replaces a complete old PDF.
+ * @param request - `{ path, cwd?, preset?, page?, browserPath?, renderer? }`.
+ * @param options - process-level defaults merged under the request, plus an
+ *   injectable `printBrowser` for the checks.
  * @returns the produced file, its printer, and the timings.
  * @throws {PdfError} for every refusal the caller can act on.
  */
@@ -589,18 +587,20 @@ export async function exportMarkdownToPdf(request, options = {}) {
     if (markdown.includes('\u0000')) {
       throw new PdfError('not-text', `file is not plain text: ${sourcePath}`)
     }
-    const page = normalizePage(request?.page ?? options.page)
+    // The same rule the DSH path uses; the saved page settings, the file's
+    // front matter, and the request override all reach the printed page.
+    const { preset, page } = await resolveDocumentSetup(markdown, request, options.page)
     const browserPath = request?.browserPath ?? options.browserPath
-    const { selected } = await listPresets()
-    const preset = await readPreset(selected)
+    const print = typeof options.printBrowser === 'function' ? options.printBrowser : printBrowser
 
     const rendered = await renderDocument({
       markdown,
       title: stem,
       baseHref: baseHrefOf(directory),
       page,
-      theme: selected,
+      theme: preset.id,
       themeCss: preset.css,
+      pageCss: pageOverrideCss(page),
       renderer: request?.renderer ?? options.renderer,
     }, { pandocPath: options.pandocPath })
 
@@ -610,7 +610,7 @@ export async function exportMarkdownToPdf(request, options = {}) {
     const htmlPath = join(work, 'document.html')
     try {
       await writeFile(htmlPath, rendered.html, 'utf8')
-      const printed = await printBrowser(htmlPath, staging, {
+      const printed = await print(htmlPath, staging, {
         browserPath,
         timeoutMs: options.timeoutMs,
       })

@@ -1762,6 +1762,7 @@ window.__ModuleLoader__.load({
           }, [])
 
           const applyPreset = React.useCallback(async (id) => {
+            setBusy(true)
             try {
               await act({ action: 'select', id })
               await load()
@@ -1769,6 +1770,8 @@ window.__ModuleLoader__.load({
               setStatus({ kind: 'ok', text: t('settings.applied', { name: nameOf(id) }) })
             } catch (error) {
               fail('settings.applyFailed', error)
+            } finally {
+              setBusy(false)
             }
           }, [act, load, loadPreviews, nameOf, fail])
 
@@ -1848,16 +1851,20 @@ window.__ModuleLoader__.load({
             if (from < 0 || to < 0 || to >= ids.length) return
             const next = ids.slice()
             next.splice(to, 0, next.splice(from, 1)[0])
+            setBusy(true)
             try {
               await act({ action: 'order', ids: next })
               await load()
               await loadPreviews()
             } catch (error) {
               fail('settings.orderFailed', error)
+            } finally {
+              setBusy(false)
             }
           }, [act, presets, load, loadPreviews, fail])
 
           const restoreShipped = React.useCallback(async () => {
+            setBusy(true)
             try {
               await act({ action: 'restore' })
               await load()
@@ -1865,6 +1872,8 @@ window.__ModuleLoader__.load({
               setStatus({ kind: 'ok', text: t('settings.restored') })
             } catch (error) {
               fail('settings.restoreFailed', error)
+            } finally {
+              setBusy(false)
             }
           }, [act, load, loadPreviews, fail])
 
@@ -1950,7 +1959,7 @@ window.__ModuleLoader__.load({
               type: 'button',
               className: 'md2pdf-card-apply',
               'data-action': 'apply',
-              disabled: phase === 'loading',
+              disabled: busy || pageBusy || phase === 'loading',
               title: preset.name,
               'aria-label': t('settings.applyPreset', { name: preset.name }),
               onClick: () => { applyPreset(preset.id) },
@@ -1972,7 +1981,7 @@ window.__ModuleLoader__.load({
               type: 'button',
               className: 'md2pdf-card-remove',
               'data-action': 'remove',
-              disabled: phase === 'loading',
+              disabled: busy || pageBusy || phase === 'loading',
               'aria-label': t('settings.removePreset', { name: preset.name }),
               onClick: () => { setDialog({ kind: 'delete', id: preset.id, name: preset.name }) },
             }, h(TrashGlyph, null))))))
@@ -2038,14 +2047,14 @@ window.__ModuleLoader__.load({
               className: 'md2pdf-btn',
               'data-tone': 'primary',
               'data-md2pdf-action': 'save-page',
-              disabled: pageBusy || phase === 'loading' || selected === '',
+              disabled: busy || pageBusy || phase === 'loading' || selected === '',
               onClick: submitPage,
             }, t('settings.pageSave')),
             h('button', {
               type: 'button',
               className: 'md2pdf-btn',
               'data-md2pdf-action': 'reset-page',
-              disabled: pageBusy || phase === 'loading' || selected === '',
+              disabled: busy || pageBusy || phase === 'loading' || selected === '',
               onClick: resetPage,
             }, t('settings.pageReset'))))
           if (pageForms.length > 0) {
@@ -2077,35 +2086,35 @@ window.__ModuleLoader__.load({
               className: 'md2pdf-btn',
               'data-tone': 'primary',
               'data-md2pdf-action': 'save',
-              disabled: busy || phase === 'loading',
+              disabled: busy || pageBusy || phase === 'loading',
               onClick: () => { setDialog({ kind: 'save', draft: name }) },
             }, t('settings.save')),
             h('button', {
               type: 'button',
               className: 'md2pdf-btn',
               'data-md2pdf-action': 'new',
-              disabled: busy || phase === 'loading',
+              disabled: busy || pageBusy || phase === 'loading',
               onClick: startNewPreset,
             }, t('settings.create')),
             h('button', {
               type: 'button',
               className: 'md2pdf-btn',
               'data-md2pdf-action': 'reload',
-              disabled: busy || phase === 'loading',
+              disabled: busy || pageBusy || phase === 'loading',
               onClick: () => { if (editingId === null) load(); else editPreset(editingId) },
             }, t('settings.reload')),
             h('button', {
               type: 'button',
               className: 'md2pdf-btn',
               'data-md2pdf-action': 'up',
-              disabled: busy || phase === 'loading' || editingId === null,
+              disabled: busy || pageBusy || phase === 'loading' || editingId === null,
               onClick: () => { movePreset(editingId, -1) },
             }, t('settings.moveUp')),
             h('button', {
               type: 'button',
               className: 'md2pdf-btn',
               'data-md2pdf-action': 'down',
-              disabled: busy || phase === 'loading' || editingId === null,
+              disabled: busy || pageBusy || phase === 'loading' || editingId === null,
               onClick: () => { movePreset(editingId, 1) },
             }, t('settings.moveDown')),
             missingBuiltin
@@ -2113,7 +2122,7 @@ window.__ModuleLoader__.load({
                 type: 'button',
                 className: 'md2pdf-btn',
                 'data-md2pdf-action': 'restore',
-                disabled: busy || phase === 'loading',
+                disabled: busy || pageBusy || phase === 'loading',
                 onClick: restoreShipped,
               }, t('settings.restore'))
               : null))

@@ -286,6 +286,55 @@ try {
   expectEqual('concurrent first reads migrate once', concurrentIndex.version, 2)
   await rm(concurrentHome, { recursive: true, force: true, maxRetries: 3 }).catch(() => {})
 
+  // Every index mutation is one read-modify-write transaction. A page save that
+  // overlaps a select, an order, or a settings save must keep both results, and
+  // a failed transaction must not block the next one.
+  const raceHome = await mkdtemp(join(tmpdir(), 'dsh-md2pdf-race-'))
+  process.env['MD2PDF_HOME'] = raceHome
+  await listPresets()
+  await selectPreset('lark')
+  await Promise.all([
+    savePresetPage('lark', { marginMm: 20 }),
+    selectPreset('paper'),
+  ])
+  const racedSelect = JSON.parse(await readFile(join(raceHome, 'presets.json'), 'utf8'))
+  expectEqual('a page save racing a select keeps the page',
+    racedSelect.presets.find(preset => preset.id === 'lark').page?.marginMm, 20)
+  expectEqual('a page save racing a select keeps the selection', racedSelect.selected, 'paper')
+
+  await Promise.all([
+    savePresetPage('gongwen', { fontSize: 12 }),
+    orderPresets(['paper', 'lark', 'gongwen']),
+  ])
+  const racedOrder = JSON.parse(await readFile(join(raceHome, 'presets.json'), 'utf8'))
+  expectEqual('a page save racing an order keeps the page',
+    racedOrder.presets.find(preset => preset.id === 'gongwen').page?.fontSize, 12)
+  expectEqual('a page save racing an order keeps the order',
+    racedOrder.presets.map(preset => preset.id).join(','), 'paper,lark,gongwen')
+
+  await Promise.all([
+    savePresetPage('paper', { marginMm: 18 }),
+    savePreset({ id: 'lark', name: 'Lark 竞态', css: 'body { color: red; }' }),
+  ])
+  const racedSave = JSON.parse(await readFile(join(raceHome, 'presets.json'), 'utf8'))
+  expectEqual('a page save racing a settings save keeps the page',
+    racedSave.presets.find(preset => preset.id === 'paper').page?.marginMm, 18)
+  expectEqual('a page save racing a settings save keeps the name',
+    racedSave.presets.find(preset => preset.id === 'lark').name, 'Lark 竞态')
+  expectEqual('a page save racing a settings save keeps the selection', racedSave.selected, 'lark')
+
+  let raceFailure = null
+  try {
+    await savePresetPage('missing', { marginMm: 20 })
+  } catch (error) {
+    raceFailure = error
+  }
+  expectEqual('a failed transaction is refused', raceFailure?.code, 'not-found')
+  await selectPreset('lark')
+  expectEqual('a failed transaction does not block the next one',
+    JSON.parse(await readFile(join(raceHome, 'presets.json'), 'utf8')).selected, 'lark')
+  await rm(raceHome, { recursive: true, force: true, maxRetries: 3 }).catch(() => {})
+
   // A stored page is validated like a request page; a hand-edited invalid value
   // is refused instead of silently printing with a different page box.
   const invalidPageHome = await mkdtemp(join(tmpdir(), 'dsh-md2pdf-invalid-page-'))

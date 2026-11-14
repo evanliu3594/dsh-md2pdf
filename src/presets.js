@@ -133,8 +133,34 @@ async function readIndexFile() {
   }
 }
 
-/** Serializes index writes in this process; the staging name is shared. */
-let indexWriteQueue = Promise.resolve()
+/** One in-process transaction queue per settings directory. */
+const indexTransactions = new Map()
+
+/**
+ * Run one read-modify-write transaction after every earlier transaction for the
+ * same settings directory.
+ *
+ * Serializing only the write is not enough: two actions can read the same index
+ * and the second write then discards the first change. The queue therefore
+ * covers the whole read-modify-write. It is keyed by the settings directory, so
+ * two `MD2PDF_HOME` values never wait on each other, and it continues after a
+ * refused transaction so one invalid action cannot wedge the settings page. A
+ * transaction body must call the internal unlocked helpers, never a public
+ * action, or it would wait on its own queued slot.
+ * @param work - the transaction body.
+ * @returns the transaction's result or error.
+ */
+function withIndexTransaction(work) {
+  const key = settingsDirectory()
+  const previous = indexTransactions.get(key) ?? Promise.resolve()
+  const next = previous.then(work, work)
+  const settled = next.then(() => undefined, () => undefined)
+  indexTransactions.set(key, settled)
+  settled.then(() => {
+    if (indexTransactions.get(key) === settled) indexTransactions.delete(key)
+  })
+  return next
+}
 
 /**
  * Write the index file, replacing it in one rename.
@@ -150,26 +176,17 @@ async function writeIndexFile(index, directory, target, staging) {
 }
 
 /**
- * Queue one index write behind every earlier write.
+ * Write the index file from inside a transaction.
  *
- * The staging path is one fixed name, so two concurrent writers would race on
- * it: the first rename removes the staging file and the second rename then
- * fails with ENOENT. Every caller writes a complete index, so serializing the
- * writes preserves the last caller's state. The paths are fixed when the call
- * is made, not when the queued write runs.
+ * The transaction queue guarantees that no two writers reach this staging path
+ * at once, so one fixed staging name is safe.
  * @param index - the complete index to store.
  * @returns a promise for this write.
  */
 async function writeIndex(index) {
   const directory = settingsDirectory()
   const target = presetIndexPath()
-  const staging = `${target}.tmp`
-  const next = indexWriteQueue.then(
-    () => writeIndexFile(index, directory, target, staging),
-    () => writeIndexFile(index, directory, target, staging),
-  )
-  indexWriteQueue = next.then(() => undefined, () => undefined)
-  return next
+  await writeIndexFile(index, directory, target, `${target}.tmp`)
 }
 
 /**
@@ -250,9 +267,12 @@ async function migrateLegacy(index) {
 
 /**
  * Seed the store when it does not exist yet, then return the index.
+ *
+ * This is the unlocked body: its callers hold the directory's transaction, so a
+ * concurrent action cannot read the same version and write over the migration.
  * @returns the stored index.
  */
-export async function ensurePresets() {
+async function readOrSeedIndex() {
   const stored = await readIndexFile()
   if (stored.index !== null && stored.index.presets.length > 0) {
     // The first read of a version 1 index writes the version 2 format back;
@@ -271,6 +291,17 @@ export async function ensurePresets() {
   const migrated = await migrateLegacy(seeded)
   await writeIndex(migrated)
   return migrated
+}
+
+/**
+ * Seed the store when it does not exist yet, then return the index.
+ *
+ * Reads and migrations share the directory's transaction queue, so a migration
+ * write cannot replace a concurrent selection or page save with stale state.
+ * @returns the stored index.
+ */
+export async function ensurePresets() {
+  return withIndexTransaction(readOrSeedIndex)
 }
 
 /**
@@ -350,7 +381,16 @@ async function rebuildDefault() {
  * @throws {PdfError} for a blank name, an unknown id, or an unconfirmed collision.
  */
 export async function savePreset(input) {
-  const index = await ensurePresets()
+  return withIndexTransaction(() => savePresetLocked(input))
+}
+
+/**
+ * Apply one preset save inside its directory's transaction.
+ * @param input - the same input as {@link savePreset}.
+ * @returns the stored preset identity and whether it was created.
+ */
+async function savePresetLocked(input) {
+  const index = await readOrSeedIndex()
   const name = typeof input?.name === 'string' ? input.name.trim() : ''
   const css = typeof input?.css === 'string' ? input.css : ''
   if (name === '') throw new PdfError('bad-request', 'preset name is required')
@@ -394,7 +434,17 @@ export async function savePreset(input) {
  * @throws {PdfError} when the preset is unknown or a page field is invalid.
  */
 export async function savePresetPage(id, page) {
-  const index = await ensurePresets()
+  return withIndexTransaction(() => savePresetPageLocked(id, page))
+}
+
+/**
+ * Store or clear one preset's page inside its directory's transaction.
+ * @param id - preset identifier.
+ * @param page - the page fields to store, or an empty value to clear.
+ * @returns the stored identifier and page, with `page` absent after clearing.
+ */
+async function savePresetPageLocked(id, page) {
+  const index = await readOrSeedIndex()
   if (!index.presets.some(preset => preset.id === id)) {
     throw new PdfError('not-found', `unknown preset: ${String(id)}`)
   }
@@ -416,7 +466,16 @@ export async function savePresetPage(id, page) {
  * @returns the stored selection.
  */
 export async function selectPreset(id) {
-  const index = await ensurePresets()
+  return withIndexTransaction(() => selectPresetLocked(id))
+}
+
+/**
+ * Apply one selection inside its directory's transaction.
+ * @param id - preset identifier.
+ * @returns the stored selection.
+ */
+async function selectPresetLocked(id) {
+  const index = await readOrSeedIndex()
   if (!index.presets.some(preset => preset.id === id)) throw new PdfError('not-found', `unknown preset: ${String(id)}`)
   await writeIndex({ ...index, selected: id })
   return { selected: id }
@@ -429,7 +488,16 @@ export async function selectPreset(id) {
  * @throws {PdfError} when `ids` is not a permutation of the stored identifiers.
  */
 export async function orderPresets(ids) {
-  const index = await ensurePresets()
+  return withIndexTransaction(() => orderPresetsLocked(ids))
+}
+
+/**
+ * Apply one reorder inside its directory's transaction.
+ * @param ids - every preset identifier, in the new order.
+ * @returns the reordered presets.
+ */
+async function orderPresetsLocked(ids) {
+  const index = await readOrSeedIndex()
   const byId = new Map(index.presets.map(preset => [preset.id, preset]))
   if (!Array.isArray(ids) || ids.length !== index.presets.length) {
     throw new PdfError('bad-request', 'order must list every preset exactly once')
@@ -456,7 +524,16 @@ export async function orderPresets(ids) {
  * @returns the selection after deletion and the remaining presets.
  */
 export async function deletePreset(id) {
-  const index = await ensurePresets()
+  return withIndexTransaction(() => deletePresetLocked(id))
+}
+
+/**
+ * Apply one deletion inside its directory's transaction.
+ * @param id - preset identifier.
+ * @returns the selection after deletion and the remaining presets.
+ */
+async function deletePresetLocked(id) {
+  const index = await readOrSeedIndex()
   if (!index.presets.some(preset => preset.id === id)) {
     throw new PdfError('not-found', `unknown preset: ${String(id)}`)
   }
@@ -479,7 +556,15 @@ export async function deletePreset(id) {
  * @returns every preset after restoration, in display order.
  */
 export async function restoreBuiltins() {
-  const index = await ensurePresets()
+  return withIndexTransaction(restoreBuiltinsLocked)
+}
+
+/**
+ * Restore the missing shipped presets inside the directory's transaction.
+ * @returns every preset after restoration, in display order.
+ */
+async function restoreBuiltinsLocked() {
+  const index = await readOrSeedIndex()
   const present = new Set(index.presets.map(preset => preset.id))
   const restored = [...index.presets]
   for (const theme of THEMES) {
