@@ -1207,6 +1207,99 @@ try {
   expectEqual('the settings route reports the plugin home',
     settingsAnswer.payload?.homePath, home)
 
+  // The sweep must run at the job deadline while the write is in flight, not
+  // before it: with the lease taken before the write, the sweep cannot expire
+  // the job. A store clock placed near the deadline models that race.
+  let leaseClock = Date.now()
+  const deadlineShop = createPrintJobs({ now: () => leaseClock, timeoutMs: 1000 })
+  let deadlineLeaseCalls = 0
+  const sweepOnDeadline = {
+    ...deadlineShop,
+    beginFinish(token) {
+      deadlineLeaseCalls += 1
+      const job = deadlineShop.beginFinish(token)
+      deadlineShop.expire(job.deadline + 1)
+      return job
+    },
+  }
+  const deadlinePrepared = await prepareExport({ path: leaseFile, owner: 'tool' }, { jobs: sweepOnDeadline })
+  const deadlineJob = deadlineShop.get(deadlinePrepared.finishToken)
+  leaseClock = deadlineJob.deadline - 50
+  const deadlineResult = await finishExport(
+    { finishToken: deadlinePrepared.finishToken, pdfBytes: PDF },
+    { jobs: sweepOnDeadline },
+  )
+  expectEqual('a deadline finish takes the write lease', deadlineLeaseCalls, 1)
+  expectEqual('a deadline sweep during the write does not expire the job', deadlineResult.ok, true)
+  expectEqual('the deadline write reaches the target', (await readFile(leaseTarget)).equals(PDF), true)
+  expectEqual('the deadline job ends finished', deadlineShop.get(deadlinePrepared.finishToken).state, 'finished')
+
+  // A tool whose commit starts before the deadline must wait for the write
+  // when the deadline passes, not report a timeout the file contradicts.
+  await copyFile(source, join(work, 'watcher.md'))
+  const watcherRun = trackJobs({ timeoutMs: 800 })
+  watcherRun.jobs.presence.record('watcher-client')
+  const watcherTool = exportTool({ path: join(work, 'watcher.md') }, {
+    printEngine: 'dsh',
+    jobs: watcherRun.jobs,
+    presenceWaitMs: 0,
+  })
+  await waitFor(() => watcherRun.created.length === 1 && watcherRun.created[0].ready === true)
+  const watchedJob = watcherRun.created[0]
+  expectEqual('the watcher job is claimed', watcherRun.jobs.claimToolJob()?.id, watchedJob.id)
+  const watcherDeadline = watchedJob.deadline
+  setTimeout(() => {
+    try {
+      watcherRun.jobs.beginFinish(watchedJob.finishToken)
+    } catch {
+      // The outcome assertion below reports a missed window.
+    }
+  }, Math.max(0, watcherDeadline - 100 - Date.now()))
+  setTimeout(() => {
+    finishExport({ finishToken: watchedJob.finishToken, pdfBytes: PDF }, { jobs: watcherRun.jobs })
+      .catch(() => {})
+  }, Math.max(0, watcherDeadline + 250 - Date.now()))
+  const watcherOutcome = await watcherTool
+  expectEqual('a write past the deadline settles the tool with its result',
+    watcherOutcome.engine, 'dsh')
+  expectEqual('the watcher target is written',
+    (await readFile(join(work, 'watcher.pdf'))).equals(PDF), true)
+
+  // A cancelled tool that already started a commit waits for it and returns
+  // the committed result, rather than a cancellation the file contradicts.
+  await copyFile(source, join(work, 'abort-settle.md'))
+  const abortSettleRun = trackJobs({ timeoutMs: 800 })
+  abortSettleRun.jobs.presence.record('abort-settle-client')
+  const abortSettleController = new AbortController()
+  const abortSettleTool = exportTool({ path: join(work, 'abort-settle.md') }, {
+    printEngine: 'dsh',
+    jobs: abortSettleRun.jobs,
+    presenceWaitMs: 0,
+    signal: abortSettleController.signal,
+  })
+  await waitFor(() => abortSettleRun.created.length === 1 && abortSettleRun.created[0].ready === true)
+  const settleJob = abortSettleRun.created[0]
+  expectEqual('the abort-settle job is claimed',
+    abortSettleRun.jobs.claimToolJob()?.id, settleJob.id)
+  const settleDeadline = settleJob.deadline
+  setTimeout(() => {
+    try {
+      abortSettleRun.jobs.beginFinish(settleJob.finishToken)
+    } catch {
+      // Reported by the outcome assertion.
+    }
+  }, Math.max(0, settleDeadline - 100 - Date.now()))
+  setTimeout(() => { abortSettleController.abort() }, Math.max(0, settleDeadline + 50 - Date.now()))
+  setTimeout(() => {
+    finishExport({ finishToken: settleJob.finishToken, pdfBytes: PDF }, { jobs: abortSettleRun.jobs })
+      .catch(() => {})
+  }, Math.max(0, settleDeadline + 250 - Date.now()))
+  const settleOutcome = await abortSettleTool
+  expectEqual('a cancelled tool returns the commit it waited for',
+    settleOutcome.engine, 'dsh')
+  expectEqual('the abort-settle target is written',
+    (await readFile(join(work, 'abort-settle.pdf'))).equals(PDF), true)
+
   // 7. The client wiring. The client is a classic script; the checks pin the
   // source contract and leave the real DSH window to the manual run.
   const client = await readFile(join(here, '..', 'client.js'), 'utf8')

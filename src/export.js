@@ -483,12 +483,14 @@ async function applyAfterExport(job, committed, options) {
 async function commitFinish(job, finishToken, pdfBytes, jobs, options) {
   // A job the store already ended is answered by the store, so the refusal
   // codes and the idempotent retry stay exactly Task 2's contract.
-  if (job.state !== 'prepared' && job.state !== 'claimed' && job.state !== 'printing') {
+  if (job.state !== 'prepared' && job.state !== 'claimed'
+    && job.state !== 'printing' && job.state !== 'finishing') {
     return applyAfterExport(job, jobs.finish(finishToken, pdfBytes), options)
   }
   // Take the write lease before the first await. The broker poll sweeps expiry
   // every 100 ms, so without it a slow rename could land after the job expired
-  // and leave a written PDF behind a timeout result.
+  // and leave a written PDF behind a timeout result. An existing lease is this
+  // attempt's to continue: finishing is an open state for its owner.
   jobs.beginFinish(finishToken)
 
   const verified = verifyPdf(pdfBytes)
@@ -508,7 +510,10 @@ async function commitFinish(job, finishToken, pdfBytes, jobs, options) {
     } catch {
       // Keep the write error; the job state is already unusable either way.
     }
-    throw error
+    // A refused write with a code keeps it; a raw filesystem error becomes the
+    // documented write-failed code instead of an anonymous 500.
+    if (error instanceof PdfError) throw error
+    throw new PdfError('write-failed', error instanceof Error ? error.message : String(error))
   }
 
   const committed = jobs.finish(finishToken, pdfBytes)

@@ -229,8 +229,8 @@ export function createPrintJobs({
    * Claim the oldest prepared tool job.
    *
    * The broker prints one tool job at a time. A tool job that is already
-   * claimed or printing means the client is still busy, so a second tool job
-   * waits even when it is older in the queue. UI jobs never participate; they
+   * claimed, printing, or finishing means the client is still busy, so a
+   * second tool job waits even when it is older in the queue. UI jobs never participate; they
    * are printed by the client that created them. Overdue work expires first,
    * so a job past its deadline is never handed out.
    * @returns the claimed tool job, or null when none is ready.
@@ -239,7 +239,7 @@ export function createPrintJobs({
     expire()
     for (const job of jobs.values()) {
       if (job.owner !== 'tool') continue
-      if (job.state === 'claimed' || job.state === 'printing') return null
+      if (job.state === 'claimed' || job.state === 'printing' || job.state === FINISHING) return null
     }
     for (const job of jobs.values()) {
       if (job.owner !== 'tool' || job.state !== 'prepared') continue
@@ -286,7 +286,8 @@ export function createPrintJobs({
    * Mark one open job failed from the outside.
    *
    * The first reason wins; repeating the call returns the same job and keeps
-   * the original reason and timestamp. A finished job is never demoted.
+   * the original reason and timestamp. A finished job is never demoted, and a
+   * job whose write lease is live refuses the call: only its owner may end it.
    * @param idOrToken - job id, asset token, or finish token.
    * @param reason - short machine code, such as `client-error`.
    * @returns the failed job.
@@ -455,9 +456,9 @@ export function createPrintJobs({
     /**
      * Report whether any client was seen inside the presence window.
      *
-     * A tool job in `claimed` or `printing` also counts: the client that took
-     * it is busy printing and only returns to polling afterwards, so the
-     * heartbeat stops while the work is live.
+     * A tool job in `claimed`, `printing`, or `finishing` also counts: the
+     * client that took it is busy and only returns to polling afterwards, so
+     * the heartbeat stops while the work is live.
      * @param instant - clock reading to compare against; defaults to the current time.
      * @returns true when a recorded client or an active tool job is present.
      */

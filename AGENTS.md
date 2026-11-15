@@ -133,7 +133,7 @@ node scripts/pdf-info.mjs samples/sample.pdf
 
 当前计数（2026-11-15）：render 175、document config 75、print options 123、presets 107、
 previews 23、dsh preview 70、printer 5、print server 42、print jobs 80、export 138、
-after export 95、broker 273、client UI 105。计数会随功能增长；闸门是「全部通过」。
+after export 95、broker 283、client UI 105。计数会随功能增长；闸门是「全部通过」。
 `list-audit` 必须打印 `failures: builtin=0 markdown(old)=0 gfm+math=0`。
 
 三条环境事实：`src/` 或 `index.js` 的改动要重启 DSH 才加载；只改 `client.js` 刷新页面即可。打印优先走 DSH 客户端；没有客户端时启动 Chromium 浏览器。测试打印写在 `MD2PDF_HOME/test-print`。

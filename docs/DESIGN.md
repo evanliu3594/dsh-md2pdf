@@ -408,7 +408,8 @@ Host 收到 PDF 字节后：
 
 ```
 prepared → claimed → printing → finishing → finished
-                                   ↘ failed（仅写入方）
+prepared/claimed/printing → failed
+finishing → failed（仅写入方）
 prepared/claimed/printing → expired
 finishing → expired（仅在 finishGraceMs 之后）
 ```
@@ -421,7 +422,7 @@ finishing → expired（仅在 finishGraceMs 之后）
 - `failed`：客户端报告错误、PDF 校验失败或写盘失败。
 - `expired`：超时，资源服务关闭。
 
-任务字段：`id`、`assetToken`、`finishToken`、`sessionId`、`sourcePath`、`targetPath`、`html`、`assetRoot`、`printOptions`、`state`、`createdAt`、`deadline`、`owner`（`ui` 或 `tool`）。
+任务字段：`id`、`assetToken`、`finishToken`、`sessionId`、`sourcePath`、`targetPath`、`html`、`assetRoot`、`printOptions`、`state`、`createdAt`、`deadline`、`owner`（`ui` 或 `tool`）；进入 `finishing` 时记录 `finishingAt`，作为写锁宽限的起点。
 
 工具的 10 秒在场检查发生在创建任务之前：有客户端轮询就创建任务，没有则按引擎回退。任务在资源服务启动、`printUrl` 可用之前不可被 broker 认领；`ready` 标记由导出器在资源服务就绪后设置。长轮询只交付 ready 的 tool 任务。
 
@@ -542,7 +543,7 @@ document.fonts.check('16px "Family"', 'A')
 | `/md2pdf/presets` | POST | 预设动作 |
 | `/md2pdf/previews` | GET | 缩略图页面 |
 
-每条路由先调用 `ctx.connection.requestRejection()`。`finish` 额外校验 `finishToken`；`open` 只接受 `finishToken`，只服务 UI 任务，目标由 Host 从任务解析，客户端不传路径、任务 id 或 URL；`print-jobs/next` 只返回未认领任务，客户端每次轮询由 connection fence 鉴权；`print-jobs/fail` 只接受任务的确切 `finishToken` 与白名单失败原因，把任务置为 `failed` 并关闭资源服务，不写盘；`finish` 只接受 `application/pdf`，上限 64 MiB。
+每条路由先调用 `ctx.connection.requestRejection()`。`finish` 额外校验 `finishToken`；`open` 只接受 `finishToken`，只服务 UI 任务，目标由 Host 从任务解析，客户端不传路径、任务 id 或 URL；`print-jobs/next` 只返回未认领任务，客户端每次轮询由 connection fence 鉴权；`print-jobs/fail` 只接受任务的确切 `finishToken` 与白名单失败原因，把任务置为 `failed` 并关闭资源服务，不写盘；任务正在 `finishing` 时返回 409，由写入方决定结果；`finish` 只接受 `application/pdf`，上限 64 MiB。
 
 `prepare` 请求体：`{ path, sessionId?, preset?, page?, documentConfig? }`。`sessionId` 用于计算 `previewAddress`；没有它时不返回预览地址。`documentConfig` 只来自本次 UI 覆盖，不写回源文件。
 
