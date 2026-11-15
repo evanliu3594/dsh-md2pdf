@@ -131,8 +131,8 @@ node scripts/export-cli.mjs samples/sample.md --html out.html
 node scripts/pdf-info.mjs samples/sample.pdf
 ```
 
-当前计数（2026-11-15）：render 175、document config 75、print options 123、presets 107、
-previews 23、dsh preview 70、printer 5、print server 42、print jobs 80、export 138、
+当前计数（2026-11-15）：render 195、document config 75、print options 123、presets 107、
+previews 23、dsh preview 70、printer 5、print server 42、print jobs 80、export 137、
 after export 95、broker 283、client UI 105。计数会随功能增长；闸门是「全部通过」。
 `list-audit` 必须打印 `failures: builtin=0 markdown(old)=0 gfm+math=0`。
 

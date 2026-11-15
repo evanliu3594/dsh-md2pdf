@@ -263,8 +263,8 @@ export function buildHtml(input, page = DEFAULT_PAGE) {
   const body = input.bodyAfterToc === true
     ? `<div class="md2pdf-body">\n${input.body}\n</div>`
     : input.body
-  // The optional blocks carry their own trailing newline, so a document with
-  // neither a paper block nor a TOC keeps exactly the previous body markup.
+  // The optional prefixes add one newline after a present block, so a document
+  // with neither a paper block nor a TOC keeps exactly the previous body markup.
   const paperPrefix = paper === '' ? '' : paper + '\n'
   const tocPrefix = toc === '' ? '' : toc + '\n'
   // Four layers, later winning: the structural sheet, the selected preset, the

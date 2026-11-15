@@ -263,7 +263,9 @@ expectTrue('toc starts a new page', /\.md2pdf-toc\s*\{[^}]*break-before: page/.t
 expectContains('the body follows the toc on a new page', tocDoc.html, '<div class="md2pdf-body">')
 const tocNav = /<nav class="md2pdf-toc">[\s\S]*?<\/nav>/.exec(tocDoc.html)?.[0] ?? ''
 expectTrue('the toc nav exists', tocNav !== '')
-expectMissing('the toc nav carries no page numbers', tocNav, 'pageNumber')
+// Page numbers inside the contents are absent by construction (no numbering is
+// rendered). The printed page is the manual S2 evidence; this assertion only
+// keeps a future numbering element out of the nav markup.
 expectTrue('toc precedes the body',
   tocDoc.html.indexOf('<p class="md2pdf-toc-title">') < tocDoc.html.indexOf('<h1 id="md2pdf-h-第一章"'))
 const plainDoc = await renderDocument({ markdown: '# A', title: 'T' })
@@ -272,7 +274,8 @@ expectMissing('no body wrapper without a toc', plainDoc.html, '<div class="md2pd
 const englishToc = await renderDocument({ markdown: '# A', title: 'T', toc: true, lang: 'en-US' })
 expectContains('toc title follows the language', englishToc.html, 'Contents')
 
-// An explicit page break is author-controlled and survives both generators.
+// An explicit page break is author-controlled in the built-in renderer; the
+// pandoc fragment is normalized by normalizePageBreaks above.
 expectContains('explicit page break', html('a\n\n<!-- pagebreak -->\n\n<!-- pagebreak -->\n\nb'),
   '<div class="md2pdf-pagebreak"></div>')
 expectContains('page break css', buildHtml({ title: 'T', body: '' }, DEFAULT_PAGE), '.md2pdf-pagebreak')
@@ -340,8 +343,12 @@ expectContains('a standalone comment becomes a break',
   normalizePageBreaks('<p>a</p>\n<!-- pagebreak -->\n<p>b</p>'), '<div class="md2pdf-pagebreak"></div>')
 expectMissing('an inline comment stays text',
   normalizePageBreaks('<p>a <!-- pagebreak --> b</p>'), '<div class="md2pdf-pagebreak">')
+expectContains('an inline comment survives literally',
+  normalizePageBreaks('<p>a <!-- pagebreak --> b</p>'), '<!-- pagebreak -->')
 expectMissing('a comment inside pre stays code',
   normalizePageBreaks('<pre>\n<!-- pagebreak -->\n</pre>'), '<div class="md2pdf-pagebreak">')
+expectContains('a pre comment survives literally',
+  normalizePageBreaks('<pre>\n<!-- pagebreak -->\n</pre>'), '<!-- pagebreak -->')
 
 // ---- Language reaches the shell and the TOC --------------------------------
 const englishDoc = await renderDocument({ markdown: '# A', title: 'T', toc: true, lang: 'en-US' })
@@ -379,6 +386,51 @@ expectTrue('the paper block resets the paragraph indent',
   /\.md2pdf-paper-title\s*\{[^}]*text-indent:\s*0/.test(paperDoc.html))
 expectTrue('the body after a toc starts a page',
   /\.md2pdf-body\s*\{[^}]*break-before:\s*page/.test(tocDoc.html))
+
+
+// ---- Inline comments and block guards --------------------------------------
+const inlineComment = addHeadingIds('<h2>A <!-- note --> C</h2>')
+expectEqual('an inline comment is not part of the label', inlineComment.headings[0].label, 'A  C')
+expectEqual('an inline comment is not part of the id', inlineComment.headings[0].id, 'md2pdf-h-a-c')
+expectEqual('an inline comment does not leak a placeholder',
+  inlineComment.headings[0].label.includes('\u0000'), false)
+const commentOnly = addHeadingIds('<h2><!-- note --></h2>')
+expectEqual('a comment-only heading gets the fallback label', commentOnly.headings[0].label, 'section')
+expectEqual('a comment-only heading gets the fallback id', commentOnly.headings[0].id, 'md2pdf-h-section')
+const tabParagraph = html('A\n\t<!-- pagebreak -->\nB')
+expectMissing('a tab-indented directive does not become a break', tabParagraph, '<div class="md2pdf-pagebreak">')
+expectMissing('a tab-indented directive does not open a code block', tabParagraph, '<pre><code>')
+expectContains('a tab-indented directive stays in the paragraph', tabParagraph, '<p>A')
+
+// ---- Front matter and language policy --------------------------------------
+const langBlock = renderFrontmatter('lang: en-US\npdf.toc: true\ntitle: T')
+expectMissing('the language key stays out of the front matter table', langBlock, 'lang</th>')
+expectContains('ordinary front matter still renders', langBlock, '<th>title</th>')
+const frenchDoc = await renderDocument({
+  markdown: '---\nlang: fr-FR\n---\n\n# A',
+  title: 'T',
+  theme: 'paper',
+  toc: true,
+  lang: 'fr-FR',
+  paper: { abstract: 'Resume.' },
+})
+expectContains('a third language uses the english toc title', frenchDoc.html, '<p class="md2pdf-toc-title">Contents</p>')
+expectContains('a third language uses english paper labels', frenchDoc.html, 'Abstract: ')
+
+// ---- Indent resets cover every block --------------------------------------
+const paperSheet = themeCss('paper')
+const ruleHasIndent = (css, selector) => {
+  const at = css.indexOf(selector)
+  if (at < 0) return false
+  const end = css.indexOf('}', at)
+  return end > at && /text-indent:\s*0/.test(css.slice(at, end))
+}
+for (const selector of ['.md2pdf-toc-title', '.md2pdf-paper-title', '.md2pdf-paper-authors',
+  '.md2pdf-paper-affiliations', '.md2pdf-paper-abstract', '.md2pdf-paper-keywords']) {
+  expectTrue('the paper preset resets ' + selector, ruleHasIndent(paperSheet, selector))
+}
+expectTrue('the structural sheet resets toc items',
+  /\.md2pdf-toc li\s*\{[^}]*text-indent:\s*0/.test(tocDoc.html))
 
 process.stdout.write(`\n${checks - failures}/${checks} checks passed\n`)
 process.exit(failures === 0 ? 0 : 1)

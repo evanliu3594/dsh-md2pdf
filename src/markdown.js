@@ -164,7 +164,9 @@ export function renderFrontmatter(source) {
   if (source === null) return ''
   const rows = []
   for (const [key, value] of Object.entries(parseFrontmatter(source))) {
-    if (key.startsWith('pdf.')) continue
+    // pdf.* keys configure the export; lang picks the TOC and paper labels.
+    // Neither describes the document content.
+    if (key.startsWith('pdf.') || key === 'lang') continue
     rows.push(`<tr><th>${escapeHtml(key)}</th><td>${escapeHtml(value)}</td></tr>`)
   }
   if (rows.length === 0) return ''
@@ -179,7 +181,15 @@ const NAMED_ENTITIES = {
   deg: '°', plusmn: '±', micro: 'µ', middot: '·', bull: '•', dagger: '†',
   laquo: '«', raquo: '»', euro: '€', pound: '£', yen: '¥', cent: '¢',
   sect: '§', para: '¶', eacute: 'é', egrave: 'è', agrave: 'à', ccedil: 'ç',
-  uuml: 'ü', ouml: 'ö', auml: 'ä', szlig: 'ß',
+  uuml: 'ü', ouml: 'ö', auml: 'ä', szlig: 'ß', aacute: 'á', iacute: 'í',
+  oacute: 'ó', uacute: 'ú', ntilde: 'ñ', Aacute: 'Á', Eacute: 'É', Iacute: 'Í',
+  Oacute: 'Ó', Uacute: 'Ú', Ntilde: 'Ñ',
+  alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', epsilon: 'ε', zeta: 'ζ',
+  eta: 'η', theta: 'θ', iota: 'ι', kappa: 'κ', lambda: 'λ', mu: 'μ', nu: 'ν',
+  xi: 'ξ', omicron: 'ο', pi: 'π', rho: 'ρ', sigma: 'σ', tau: 'τ', upsilon: 'υ',
+  phi: 'φ', chi: 'χ', psi: 'ψ', omega: 'ω',
+  Alpha: 'Α', Beta: 'Β', Gamma: 'Γ', Delta: 'Δ', Theta: 'Θ', Lambda: 'Λ',
+  Mu: 'Μ', Pi: 'Π', Sigma: 'Σ', Phi: 'Φ', Psi: 'Ψ', Omega: 'Ω',
 }
 
 /**
@@ -221,6 +231,9 @@ function plainTextOf(html) {
     .replace(/<annotation\b[^>]*>[\s\S]*?<\/annotation\s*>/gi, '')
     .replace(/<a\b[^>]*class="[^"]*footnote-ref[^"]*"[^>]*>[\s\S]*?<\/a\s*>/gi, '')
     .replace(/<sup class="footnote-ref"[\s\S]*?<\/sup>/gi, '')
+    // A comment is invisible, so its protected placeholder must not join the
+    // visible text. This also covers an inline comment inside a heading.
+    .replace(/\u0000\d+\u0000/g, '')
     .replace(/<[^>]*>/g, ''))
 }
 
@@ -488,8 +501,8 @@ function opensBlock(lines, index) {
   if (/^[ \t]{0,3}>/.test(line)) return true
   if (/^[ \t]{0,3}\$\$/.test(line)) return true
   // The directive is a block, so a paragraph ends before it even without a
-  // blank line, matching the pandoc path.
-  if (/^[ \t]{0,3}<!--[ \t]*pagebreak[ \t]*-->[ \t]*$/i.test(line)) return true
+  // blank line, matching the pandoc path. An indented directive is code.
+  if (indentOf(line) < 4 && /^[ \t]{0,3}<!--[ \t]*pagebreak[ \t]*-->[ \t]*$/i.test(line)) return true
   if (LIST_MARKER.test(line)) return true
   if (line.includes('|') && index + 1 < lines.length && isDelimiterRow(lines[index + 1])) return true
   const tag = /^[ \t]{0,3}<([a-zA-Z][a-zA-Z0-9-]*)\b/.exec(line)

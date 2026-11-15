@@ -14,7 +14,7 @@ result line.
 
 | Suite | Node 26.13.1 | Node 24.21.0 |
 |---|---|---|
-| render | 175/175 | 175/175 |
+| render | 195/195 | 195/195 |
 | document config | 75/75 | 75/75 |
 | print options | 123/123 | 123/123 |
 | presets | 107/107 | 107/107 |
@@ -23,7 +23,7 @@ result line.
 | printer | 5/5 | 5/5 |
 | print server | 42/42 | 42/42 |
 | print jobs | 80/80 | 80/80 |
-| export | 138/138 | 138/138 |
+| export | 137/137 | 137/137 |
 | after export | 95/95 | 95/95 |
 | broker | 283/283 | 283/283 |
 | client UI | 105/105 | 105/105 |

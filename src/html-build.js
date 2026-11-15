@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+import { PAPER_FIELDS } from './document-config.js'
 import { buildHtml, DEFAULT_PAGE } from './document.js'
 import { loadMathRenderer } from './math.js'
 import { addHeadingIds, renderFrontmatter, renderMarkdown, splitFrontmatter, tocHtml } from './markdown.js'
@@ -117,13 +118,15 @@ const PAPER_LABELS = {
 export function renderPaperBlock(paper, options = {}) {
   if (paper === null || typeof paper !== 'object') return ''
   const fields = {}
-  for (const key of ['title', 'authors', 'affiliations', 'abstract', 'keywords', 'date']) {
+  for (const key of PAPER_FIELDS) {
     const value = paper[key]
     if (typeof value === 'string' && value.trim() !== '') fields[key] = value.trim()
   }
   if (Object.keys(fields).length === 0) return ''
+  // The TOC and the paper labels share one rule: Chinese for zh, English for
+  // every other language, so a third language never mixes the two.
   const lang = typeof options.lang === 'string' ? options.lang.toLowerCase() : 'zh-cn'
-  const labels = lang.startsWith('en') ? PAPER_LABELS.en : PAPER_LABELS.zh
+  const labels = lang.startsWith('zh') ? PAPER_LABELS.zh : PAPER_LABELS.en
   const rows = []
   if (fields.title !== undefined) rows.push(`<p class="md2pdf-paper-title">${escapeText(fields.title)}</p>`)
   if (fields.authors !== undefined) rows.push(`<p class="md2pdf-paper-authors">${escapeText(fields.authors)}</p>`)

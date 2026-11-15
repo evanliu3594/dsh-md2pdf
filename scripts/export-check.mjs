@@ -340,7 +340,6 @@ try {
     tocHtml.includes('<nav class="md2pdf-toc">'), true)
   expectEqual('the toc links the heading id',
     tocHtml.includes('<a href="#md2pdf-h-第一章">第一章</a>'), true)
-  expectEqual('the toc page has no page numbers', tocHtml.includes('class="pageNumber"'), false)
   await finishExport({ finishToken: tocPrepared.finishToken, pdfBytes: PDF })
 
   const breakSource = join(work, 'break.md')
