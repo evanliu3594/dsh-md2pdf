@@ -78,6 +78,9 @@ Seven print cases ran through `md2pdf_export` after a DSH restart:
 - viewer: PASS; a sidebar export of README.md opened in the right-sidebar
   preview (user report).
 
+- browser engine: PASS; md2pdf_export returned engine browser in 1.38 s and
+  wrote a 2-page PDF through Edge without a client lease.
+
 The first run at 9bd167f found two defects. Chromium only builds the PDF
 outline when generateTaggedPDF is on, and the header template started at the
 paper edge. Both are fixed at 4343056 and re-verified. Test print, the S3
@@ -90,8 +93,8 @@ Windows machine. Each case is listed with its expected result in
 docs/V2-VERIFICATION.md.
 
 - S2 is complete on macOS: all eight cases passed on 2026-11-15.
-- S3 agent broker: client closed mid-job, browser engine, two windows,
-  cancellation. The plain tool export passed on 2026-11-15.
+- S3 agent broker: client closed mid-job, two windows, cancellation. The
+  plain tool export and the browser engine passed on 2026-11-15.
 - S4 preset bundle and history: export, import with conflicts, history list,
   restore.
 - Windows matrix: link and restart, S2/S3/S4 equivalents, Chinese/space paths,

@@ -79,7 +79,7 @@ fresh client window.
 |---|---|---|---|
 | S3-1 | Call `md2pdf_export` on a sample path | client prints, Host writes, tool returns `engine: dsh`; no preview, no toast | PASS 2026-11-15. Seven fixtures returned `engine: dsh`, `generator: builtin`, and wrote the PDF beside the source. The tool result has no preview or toast field. |
 | S3-2 | Close or refresh the client during a job | `job-timeout`, loopback server closed, old PDF unchanged, no `.md2pdf-*.pdf.tmp` beside the source | pending |
-| S3-3 | Set `printEngine: browser`, call the tool | browser result `engine: browser`; the client does not poll | pending |
+| S3-3 | Set `printEngine: browser`, call the tool | browser result `engine: browser`; the client does not poll | PASS 2026-11-15 15:47. The tool returned `engine: browser`, `generator: builtin`, 25,261 bytes in 1,376 ms. The PDF is 2 pages, A4, Skia/PDF m157, with no header, footer, or page numbers. The client path is not used. |
 | S3-4 | Call the tool twice with two Desktop windows | tool jobs print one at a time; the second waits, then prints | pending |
 | S3-5 | Cancel a running tool call | job ends failed or the in-flight commit settles; no orphan server or staging file | pending |
 
