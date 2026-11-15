@@ -66,7 +66,7 @@ STFangsong Type3 glyph box. The user accepted the 3.8 mm deviation on
 | Case | Action | Expected | Result |
 |---|---|---|---|
 | S4-1 | Settings → Export presets | one JSON file downloads with every preset, its stylesheet, page metadata, and the selection | PASS 2026-11-15 15:59. ~/Downloads/dsh-md2pdf-presets.json is version 2 with 3 presets (lark, gongwen, paper), each with css and page metadata, selected gongwen. |
-| S4-2 | Import the file on another machine | presets appear; a conflicting preset asks before its stylesheet and page settings are replaced | PARTIAL. The conflict dialog appeared and the imported bundle kept the local name `Lark 测试` while the bundle records `Lark` (exported at 15:59:27, before the rename). The dialog offers only stylesheet and page settings, so the name retention is by design. Whether the user clicked Replace is not yet confirmed. |
+| S4-2 | Import the file on another machine | presets appear; a conflicting preset asks before its stylesheet and page settings are replaced | PASS 2026-11-15. The dialog listed Lark, 红头公文, 学术论文; the user clicked 覆盖. The stylesheet and page settings were replaced; the local name `Lark 测试` stayed because the dialog promises styles and page settings only. The dialog shows the bundle names, not the local card names, which explains the apparent mismatch. |
 | S4-3 | Change a preset twice, open History | the last snapshots are listed newest first, at most 20 | PASS. gongwen has 5 snapshots from 16:02:00 to 16:03:35, newest first; lark has 1; both are under the cap of 20. |
 | S4-4 | Restore an older snapshot | the editor and the next export use that stylesheet; the replaced stylesheet is itself in the history | PASS. The CSS editor showed the older stylesheet after Restore. The current gongwen.css is 3590 bytes (hash b7f842...) and matches earlier snapshots, while the snapshot it replaced is 3608 bytes, so an older version was written back. The next export reads this file. |
 
@@ -107,6 +107,8 @@ fresh client window.
   paper block styling reaches new or restored presets first.
 - Page numbers are centered on every page. There is no cover page, red-head
   template, watermark, contents page numbers, or figure cross-reference.
+- The import conflict dialog lists the bundle's preset names, not the local
+  card names. An overwrite keeps the local name; the two names can differ.
 - The contents title and the paper labels follow front matter `lang`
   (default `zh-CN`).
 - The Mac STFangsong Type3 exception above is accepted for this version.

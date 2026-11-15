@@ -102,10 +102,10 @@ docs/V2-VERIFICATION.md.
   16.4 s); the old PDF and staging files were unchanged. The two-window case
   cannot run on this install, which cannot open a second DSH window; the
   busy-claim rule is covered by the print-jobs suite.
-- S4 preset bundle and history: export, history list, and restore passed on
-  2026-11-15. The conflict prompt appeared; whether Replace was clicked is not
-  confirmed. The overwrite rule keeps the local name, which is why Lark stayed
-  `Lark 测试`.
+- S4 preset bundle and history: all four cases passed on 2026-11-15. The
+  conflict prompt listed all three presets and the user clicked 覆盖. The
+  overwrite replaced styles and page settings and kept the local name, so Lark
+  stayed `Lark 测试` while the bundle records `Lark`.
 - Windows matrix: link and restart, S2/S3/S4 equivalents, Chinese/space paths,
   locked target, browser fallback.
 
