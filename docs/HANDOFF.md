@@ -53,6 +53,9 @@ Thirteen suites, green on Node 26.13.1 and Node 24.21.0 at 4343056:
 list-audit: failures: builtin=0 markdown(old)=0 gfm+math=0.
 node --check passes on every changed JS file; git diff --check is clean.
 
+Windows 10 reports 136/136 for export because the account lacks the file-symlink
+privilege; three symlink assertions skip. The other twelve suites match.
+
 ## S1 result (2026-11-14)
 
 - Windows: PASS. DSH export (gongwen) 4 pages, A4, 332,192 bytes, fonts
@@ -88,29 +91,42 @@ Seven print cases ran through `md2pdf_export` after a DSH restart:
 
 The first run at 9bd167f found two defects. Chromium only builds the PDF
 outline when generateTaggedPDF is on, and the header template started at the
-paper edge. Both are fixed at 4343056 and re-verified. Test print, the S3
-close/cancel cases, S4, and the Windows matrix remain open.
+paper edge. Both are fixed at 4343056 and re-verified.
 
-## Manual gates still open
+## Windows result (2026-11-15)
 
-These need a DSH restart with this branch linked and, for the last one, a
-Windows machine. Each case is listed with its expected result in
-docs/V2-VERIFICATION.md.
+Windows 10 Pro 22H2 (19045.6466), DSH 0.2.2-rc.3, Node v26.13.1, repo
+`D:\Liu\Desktop\test-md2pdf\dsh-md2pdf-win`, `printEngine: dsh`.
 
-- S2 is complete on macOS: all eight cases passed on 2026-11-15.
-- Local macOS verification is complete except the two-window case, which this
-  install cannot run. S3 agent broker: plain tool export, browser engine, client disconnect, and
-  cancellation passed on 2026-11-15. Client disconnect used SIGSTOP on both
-  DSH renderers for 130 s (refresh had no effect; closing the window only hid
-  it); the job timed out, the old PDF stayed, and no staging file appeared.
-  The two-window case cannot run on this install, which cannot open a second
-  DSH window; the busy-claim rule is covered by the print-jobs suite.
-- S4 preset bundle and history: all four cases passed on 2026-11-15. The
-  conflict prompt listed all three presets and the user clicked 覆盖. The
-  overwrite replaced styles and page settings and kept the local name, so Lark
-  stayed `Lark 测试` while the bundle records `Lark`.
-- Windows matrix: link and restart, S2/S3/S4 equivalents, Chinese/space paths,
-  locked target, browser fallback.
+- Thirteen suites: twelve counts match macOS. Export is 136/136 because the
+  account lacks the file-symlink privilege; three symlink assertions skip.
+- Seven DSH exports returned `engine: dsh`, `generator: builtin`. gongwen is 4
+  pages, A4, with FangSong/KaiTi/SimSun and a 9-entry outline; toc is 2 pages
+  with 3 links for its 3 headings; paper is 1 page; pagebreak is 2 pages.
+- Test print: 1 page A4, 119,108 bytes, outline and structure tree present.
+- Locked target: `file-busy`; the 26,232-byte PDF stayed unchanged (hash
+  C5B1E8DE...); no staging file. The lock was held in a workspace copy because
+  the agent sandbox denied writes outside it.
+- Browser fallback: 2-page PDF through Edge; no headers or footers configured.
+- Visual checks: 8/8 confirmed by the user.
+- Full report: docs/WINDOWS-REPORT-2026-11-15.md.
+
+The report notes three non-failures: the TOC fixture has three headings, the
+`/Dest [` counter does not count named destinations, and export-check skips the
+symlink cases on Windows.
+
+## Verification status
+
+- S1: PASS on macOS and Windows. The Mac STFangsong 3.8 mm deviation is
+  accepted.
+- S2: 8/8 on macOS; the Windows equivalents pass.
+- S3: plain tool export, browser engine, client disconnect, and cancellation
+  pass. The two-window case cannot run on either install; the busy-claim rule
+  is covered by the print-jobs suite.
+- S4: 4/4.
+- Windows matrix: PASS.
+- No functional gate remains open. The two-window case is the only unrun check,
+  and it is an install limitation.
 
 ## Deferred and out of scope
 
@@ -152,7 +168,8 @@ Important findings; all four are fixed at the head:
 
 The final-review commit also records two limitations honestly: the browser
 fallback does not run afterExport, and jobTimeoutMs/allowRemoteImages are not
-wired in v2. Manual S2/S3/S4 and the Windows matrix remain the only gates.
+wired in v2. Manual S2/S3/S4 and the Windows matrix are recorded in
+V2-VERIFICATION.md; no functional gate remains.
 
 S2 also found two print-option defects; both are fixed at 4343056:
 
@@ -164,8 +181,9 @@ S2 also found two print-option defects; both are fixed at 4343056:
 
 ## Merge and release
 
-1. Run the manual gates above; record each result in docs/V2-VERIFICATION.md.
-2. Merge v2-dsh-printing into main after the final review verdict is recorded.
+1. Manual gates are recorded in docs/V2-VERIFICATION.md; the Windows run
+   passed on 2026-11-15.
+2. Merge v2-dsh-printing into main; the user approved the merge on 2026-11-15.
 3. Keep the version at 0.1.0 until release. No runtime dependency was added.
 4. If the samples or docs images should reflect the new renderer output,
    regenerate them with a one-off MD2PDF_HOME before publishing.

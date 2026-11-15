@@ -31,6 +31,11 @@ result line.
 `node scripts/list-audit.mjs` on both runtimes:
 `failures: builtin=0 markdown(old)=0 gfm+math=0`.
 
+On Windows 10 (2026-11-15) the export suite reported 136/136, not 139/139,
+because the account lacks the file-symlink privilege. Three symlink assertions
+skip: the refused symlink target, the preserved file behind it, and the asset
+symlink warning. The other twelve suites match the counts above.
+
 `node --check` passes on every changed JavaScript file; `git diff --check` is clean.
 
 ## Manual S2: DSH print output
@@ -87,11 +92,29 @@ fresh client window.
 
 | Case | Expected | Result |
 |---|---|---|
-| Link the plugin into the Windows Desktop profile and restart | plugin row loads, engine reports DSH built-in | pending |
-| S2-1 equivalent with a path containing Chinese and spaces | 4 pages, A4, margins within 0.5 mm, FangSong/KaiTi/SimSun, outline visible | pending |
-| S2-2 to S2-8 equivalents | same as macOS | pending |
-| Locked target PDF | second export reports `file-busy`, old PDF and hash unchanged, no staging file | pending |
-| Browser fallback | `/md2pdf/export` prints through Edge or Chrome; no default headers or footers | pending |
+| Link the plugin into the Windows Desktop profile and restart | plugin row loads, engine reports DSH built-in | PASS 2026-11-15 17:11. Windows 10 Pro 22H2 build 19045.6466; DSH 0.2.2-rc.3; repo `D:\Liu\Desktop\test-md2pdf\dsh-md2pdf-win`; dependency link, bundle entry, and `printEngine: dsh` present; Node v26.13.1. |
+| S2-1 equivalent with a path containing Chinese and spaces | 4 pages, A4, margins within 0.5 mm, FangSong/KaiTi/SimSun, outline visible | PASS. gongwen.pdf 372,199 bytes, 4 pages, A4 594.96x841.92, outline true, fonts include FangSong, KaiTi, SimSun; visual pass at 17:29. |
+| S2-2 to S2-8 equivalents | same as macOS | PASS. 7 exports returned `engine: dsh`, `generator: builtin`; test-print.pdf 119,108 bytes, 1 page, A4, outline and struct tree present; 8 visual checks confirmed by the user. |
+| Locked target PDF | second export reports `file-busy`, old PDF and hash unchanged, no staging file | PASS. `file-busy` after 1,767 ms; 26,232-byte PDF unchanged (SHA-256 C5B1E8DE...); no staging file. The lock was held in a workspace copy because the agent sandbox denied writes outside it. |
+| Browser fallback | `/md2pdf/export` prints through Edge or Chrome; no default headers or footers | PASS. browser.pdf 2 pages; the fallback does not configure headers or footers. The PDF was not visually inspected beyond the script check. |
+
+### Windows run notes (2026-11-15)
+
+Full report: `docs/WINDOWS-REPORT-2026-11-15.md`.
+
+Three non-failures are recorded in that report:
+
+- `toc.pdf` has 3 `/Link` annotations because the fixture has three headings.
+  The checklist expected 4; the fixture, not the plugin, is the mismatch.
+- The link counter matched `/Dest [` arrays only. TOC links use named targets
+  (`/Dest /md2pdf-h-chapter-one`), so the counter is not a link count.
+- `export-check` is 136/136 on Windows without the symlink privilege, as
+  described above.
+
+The Windows script also exposed two test-aid bugs, fixed before this record:
+`$home` collided with the read-only `$HOME`, and the checklist's `Start-Job`
+lock did not survive across commands. The script now uses `$md2pdfHome`; the
+checklist uses a separate PowerShell process.
 
 ## Known limitations
 
