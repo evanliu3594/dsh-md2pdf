@@ -111,6 +111,7 @@ v2 把“渲染”和“打印”拆开。
 | `src/document-config.js` | 解析 `pdf.*` front matter，合并默认值、预设元数据、front matter、请求覆盖 |
 | `src/page-css.js` | 生成最终 `@page`/`body` 覆盖层；把 CSS 边距解析成英寸；复用 `pageMarginOf()` |
 | `src/print-options.js` | 生成 `printToPDF` 参数：页眉页脚模板、居中页码、PDF 大纲开关、边距 |
+| `src/test-print.js` | 在 `MD2PDF_HOME/test-print` 写内置测试页 |
 | `src/print-jobs.js` | 打印任务状态机、令牌、队列、超时、客户端在场判断 |
 | `src/print-server.js` | 一次性 loopback 资源服务：HTML、图片、字体；token、CSP、路径校验、超时关闭 |
 | `src/pdf.js` | 浏览器打印适配器、`awaitPdf()`、PDF 头尾校验；删除不可达的 Host Electron 分支 |
@@ -243,10 +244,10 @@ pdf.toc: true
 语义：
 
 - 论文：题名、作者、单位、摘要、关键词、日期由 paper 预设排版；不做独立封面，题名页就是正文首页。
-- 目录：按 h1–h3 生成可点击列表，标题按文档语言取“目录”或“Contents”；目录独占一页，正文从下一页开始；不做目录页码。
-- 标题 id：`md2pdf-h-<slug>`，同文重名依次加 `-2`、`-3`；slug 保留中文，拉丁字母转小写，空白与标点折成一个连字符。两种生成器共用同一套 id，目录链接与 PDF 书签都指向它。
-- 显式分页：正文单独一行 `<!-- pagebreak -->` 生成 `<div class="md2pdf-pagebreak"></div>`。
-- 论文字段由 paper 预设渲染成正文首页的标题块，不设独立封面；换用其它预设时不渲染，并记录一条警告。
+- 目录：按 h1–h3 生成可点击列表，标题由 front matter `lang` 决定（默认 `zh-CN`，取“目录”或“Contents”）；目录独占一页，正文从下一页开始；不做目录页码。
+- 标题 id：`md2pdf-h-<slug>`，同文重名依次加 `-2`、`-3`；slug 保留中文，拉丁字母转小写，空白、标点与下划线折成一个连字符。两种生成器使用同一套 id 规则；标题含公式、原始实体或脚注时，各自的可见文本可能不同，id 与目录标签也可能不同。
+- 显式分页：正文单独一行 `<!-- pagebreak -->` 生成 `<div class="md2pdf-pagebreak"></div>`。行首缩进四列属于代码块，行内出现不算指令。
+- 论文字段由 paper 预设渲染成正文首页的标题块，不设独立封面；非空字段换用其它预设时不渲染，并记录一条警告；未知 `pdf.paper.*` 键单独警告；浏览器回退不返回警告。
 - 页眉页脚：模板字符串，支持 `{page}`、`{total}`、`{title}`、`{author}`、`{date}`；由 `pageNumbers`/`header`/`footer` 任一启用 `displayHeaderFooter`。
 
 ### 样式分层
@@ -281,6 +282,7 @@ v2 的顺序：
 - `description`、`page` 可选。`page` 只在用户显式保存页面设置时写入，且只保存用户改过的字段；缺省时预设 CSS 的 `@page` 是权威。字体仍由预设 CSS 决定。
 - 页眉、页脚、页码、目录属于文档配置（`pdf.*`）或插件配置，不写入预设元数据。预设只负责这些结构的样式。
 - 版本 1 索引读取时补默认值，写回版本 2；CSS 文件不动。
+- 内置预设的 CSS 只在首次播种或「恢复内置预设」时写入磁盘。升级不会改写已有的预设文件，因此新增的论文块样式只对新建或恢复的预设生效；结构样式表仍为旧预设提供最小重置。
 - 保存顺序不变：先 CSS，后索引。
 - 导入/导出用一份 JSON 包：`{ version, presets: [{ id, name, description, page, css }] }`。导入时校验标识、名称、CSS 大小、重名；默认不覆盖，用户确认后覆盖。
 - 历史版本放在 `MD2PDF_HOME/history/<id>/<timestamp>.css`；保存前备份；保留最近 20 份；设置页可查看与恢复。
@@ -374,7 +376,7 @@ Client 把 Host 返回的参数原样传给 `<webview>.printToPDF()`：
 
 页边距从最终 `@page` 解析。禁止继续使用固定的 `page.marginMm`，否则公文预设的 37/26/35/28 mm 会被压成 18 mm。Host 传给 Client 的 `config.page` 是只含显式字段的 `PageOverride`；`landscape` 未设置时不传，交给 CSS `@page`。`displayHeaderFooter` 由页眉、页脚或页码任一启用决定。
 
-Chromium 把空字符串的页眉或页脚模板当作未设置，改用自带默认值：页眉显示日期与标题，页脚显示 URL 与页码。因此 `displayHeaderFooter` 为真时，未配置的一侧必须传一个非空且不可见的模板（`<span></span>`）。只有两侧都不启用时模板才为空。
+Chromium 把空字符串的页眉或页脚模板当作未设置，改用自带默认值：页眉显示日期与标题，页脚显示 URL 与页码。因此 `displayHeaderFooter` 为真时，未配置的一侧必须传一个非空且不可见的模板（`<span></span>`）。只有 `displayHeaderFooter` 为假（页眉、页脚、页码都未配置）时，两侧模板才为空。
 
 Host 在 `src/print-options.js` 生成参数，Client 原样转发；参数只由 Host 决定。
 
@@ -382,7 +384,7 @@ Host 在 `src/print-options.js` 生成参数，Client 原样转发；参数只�
 
 - 页码页脚默认居中，作用于所有页；v2 不做奇偶交替。
 - 页脚支持 `{page}`、`{total}`、`{title}`、`{author}`、`{date}`。
-- 页眉支持同样五个变量；未出现的变量保持字面文本。
+- 页眉支持同样五个变量；未识别的占位符保持字面文本，已识别但没有取值的变量渲染为空。
 - 模板内联字体与字号；不加载外部资源。
 - `generateDocumentOutline` 用标题生成书签；标题需要稳定 id 时由渲染器补 slug。
 
@@ -535,6 +537,7 @@ document.fonts.check('16px "Family"', 'A')
 | `/md2pdf/open` | POST | 用系统默认程序打开已完成 UI 任务的 PDF |
 | `/md2pdf/print-jobs/next` | GET | 客户端长轮询取任务 |
 | `/md2pdf/print-jobs/fail` | POST | 客户端报告工具任务失败 |
+| `/md2pdf/test-print` | POST | 渲染内置测试页并创建打印任务 |
 | `/md2pdf/settings` | GET | 预设库、选中 CSS |
 | `/md2pdf/presets` | POST | 预设动作 |
 | `/md2pdf/previews` | GET | 缩略图页面 |
@@ -574,12 +577,12 @@ document.fonts.check('16px "Family"', 'A')
 
 新增区域：
 
-- 打印引擎：显示 DSH 内置 / Edge / Chrome / 无；刷新按钮；测试打印。
+- 打印引擎：显示 DSH 内置 / Edge / Chrome / 无；刷新按钮；测试打印。测试页写在 `MD2PDF_HOME/test-print`，不进入用户工作区；没有 DSH 打印器时走浏览器回退。
 - 页面：纸张、方向、页边距、正文字号；保存到当前预设的 `page` 元数据；预览。
 - 字体：字体表、缺失警告、回退预览。
 - 预设：导入、导出、历史、恢复内置。
-- 文档：从当前标签打开，编辑本次导出的 `pdf.*` 覆盖（页面、页眉页脚、目录）；不写回源文件。
-- 诊断：引擎、字体、最近错误、临时目录、复制 JSON。
+- 文档覆盖：页面、页眉、页脚、页码、目录；只作用于本窗口后续导出，源文件与预设不变；清除即恢复文件取值。
+- 诊断：引擎、字体、最近错误、插件目录、复制 JSON；不含文档内容。
 
 现有卡片、编辑器、保存、排序、恢复交互不变。新增控件沿用 DSH 主题 token 与 locale 文案。
 
@@ -629,7 +632,7 @@ document.fonts.check('16px "Family"', 'A')
 - 预设 v2：迁移、导入导出、重名、历史、恢复。
 - 浏览器回退：现有 `awaitPdf` 用例继续。
 - 渲染器：标题 slug、目录、分页指令、论文模板字段、front matter 过滤。
-- 打印参数：页眉页脚模板与变量转义、未配置一侧的空模板、居中页码、默认页脚、大纲开关、边距透传。
+- 打印参数：页眉页脚模板与变量转义、未配置一侧的不可见模板（`<span></span>`）、居中页码、默认页脚、大纲开关、边距透传。
 
 ### 手动 spike
 

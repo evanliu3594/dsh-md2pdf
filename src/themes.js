@@ -260,7 +260,7 @@ img { max-width: 100%; display: block; margin: 6pt auto; }
 sup.footnote-ref a { color: #000; }
 .footnotes { font-size: 9pt; border-top: 0.5pt solid #000; }
 .md2pdf-toc { font-size: 10.5pt; }
-.md2pdf-toc-title { font-family: ${HEITI}; font-size: 14pt; margin: 0 0 9pt; }
+.md2pdf-toc-title { font-family: ${HEITI}; font-size: 14pt; margin: 0 0 9pt; text-indent: 0; }
 .md2pdf-toc li { margin: 0 0 2pt; }
 .md2pdf-paper { margin: 0 0 12pt; }
 .md2pdf-paper-title {

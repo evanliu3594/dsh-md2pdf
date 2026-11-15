@@ -130,6 +130,11 @@ try {
   // ---- buildPrintOptions --------------------------------------------------
 
   const margins = { top: 1.4567, bottom: 1.378, left: 1.1024, right: 1.0236 }
+  // The inert template must stay non-empty and invisible: an empty string is
+  // falsy and lets Chromium print its own default header or footer.
+  expectEqual('the inert template is pinned', INERT_HEADER_FOOTER_TEMPLATE, '<span></span>')
+  expectTrue('the inert template is not empty', INERT_HEADER_FOOTER_TEMPLATE.length > 0)
+
   const bare = buildPrintOptions({}, margins)
   expectEqual('print option keys', Object.keys(bare).join(','),
     'printBackground,preferCSSPageSize,margins,displayHeaderFooter,headerTemplate,footerTemplate,generateDocumentOutline,pageRanges')

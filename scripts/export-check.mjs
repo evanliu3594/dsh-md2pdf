@@ -78,6 +78,27 @@ async function outcome(run) {
 }
 
 /**
+ * Poll one job until it reaches a terminal state.
+ *
+ * A fixed sleep would race the render and the platform timer on a slow machine;
+ * polling proves the state the deadline produced instead of assuming it.
+ * @param store - the job store.
+ * @param token - the job's finish token.
+ * @param state - the required state.
+ * @param timeoutMs - how long to wait.
+ * @returns true when the state was observed inside the window.
+ */
+async function waitForJobState(store, token, state, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const job = store.get(token)
+    if (job !== null && job.state === state) return true
+    await sleep(20)
+  }
+  return false
+}
+
+/**
  * Report whether a URL stopped accepting connections.
  * @param url - the loopback document URL.
  * @param timeoutMs - how long to wait for the refusal.
@@ -358,6 +379,41 @@ try {
     larkPaperHtml.includes('<section class="md2pdf-paper">'), false)
   await finishExport({ finishToken: larkPaperPrepared.finishToken, pdfBytes: PDF })
 
+  const englishSource = join(work, 'english.md')
+  await writeFile(englishSource, [
+    '---',
+    'lang: en-US',
+    'pdf.toc: true',
+    'pdf.paper.abstract: English abstract.',
+    '---',
+    '',
+    '# English heading',
+    '',
+  ].join('\n'))
+  const englishPrepared = await prepareExport({ path: englishSource, preset: 'paper' })
+  const englishHtml = await (await fetch(englishPrepared.printUrl)).text()
+  expectEqual('the document language reaches the export',
+    englishHtml.includes('<html lang="en-US">'), true)
+  expectEqual('an english export uses the english toc title',
+    englishHtml.includes('<p class="md2pdf-toc-title">Contents</p>'), true)
+  expectEqual('an english export uses english paper labels',
+    englishHtml.includes('Abstract: '), true)
+  await finishExport({ finishToken: englishPrepared.finishToken, pdfBytes: PDF })
+
+  const emptyPaperSource = join(work, 'empty-paper.md')
+  await writeFile(emptyPaperSource, ['---', 'pdf.paper.title:', '---', '', '# 正文', ''].join('\n'))
+  const emptyPaper = await prepareExport({ path: emptyPaperSource, preset: 'lark' })
+  expectEqual('an empty paper field is not a paper warning',
+    emptyPaper.warnings.some(warning => warning.includes('paper preset')), false)
+  await finishExport({ finishToken: emptyPaper.finishToken, pdfBytes: PDF })
+
+  const unknownPaperSource = join(work, 'unknown-paper.md')
+  await writeFile(unknownPaperSource, ['---', 'pdf.paper.unknown: x', '---', '', '# 正文', ''].join('\n'))
+  const unknownPaper = await prepareExport({ path: unknownPaperSource, preset: 'paper' })
+  expectEqual('an unknown paper field warns',
+    unknownPaper.warnings.includes('pdf.paper.unknown'), true)
+  await finishExport({ finishToken: unknownPaper.finishToken, pdfBytes: PDF })
+
   // Flat `pdf.*` front matter configures the page and the preset. A request
   // preset outranks `pdf.preset`, which outranks the selected preset, and an
   // unknown `pdf.*` key is reported as a warning instead of blocking.
@@ -418,12 +474,14 @@ try {
   ))
   expectEqual('an unknown front matter preset is not found', badPreset?.code, 'not-found')
 
-  // Deadline: the timer expires the job and closes its server.
-  const urgent = createPrintJobs({ timeoutMs: 150 })
+  // Deadline: the timer expires the job and closes its server. The window is
+  // long enough for a slow render; the state is polled, not assumed.
+  const urgent = createPrintJobs({ timeoutMs: 1_000 })
   const expiring = await prepareExport({ path: source }, { jobs: urgent })
   expectEqual('a timed job starts prepared', urgent.get(expiring.finishToken).state, 'prepared')
+  expectEqual('the deadline expires the job',
+    await waitForJobState(urgent, expiring.finishToken, 'expired'), true)
   expectEqual('the server closes at the deadline', await isClosed(expiring.printUrl), true)
-  expectEqual('the deadline expires the job', urgent.get(expiring.finishToken).state, 'expired')
   const expired = await capture(() => finishExport({
     finishToken: expiring.finishToken, pdfBytes: PDF,
   }, { jobs: urgent }))

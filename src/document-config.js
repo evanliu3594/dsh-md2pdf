@@ -27,6 +27,11 @@ const FONT_SIZE = { min: 8, max: 24 }
 const PAGE_PREFIX = 'pdf.page.'
 const PAPER_PREFIX = 'pdf.paper.'
 
+/** Paper-template fields the built-in paper preset renders. */
+export const PAPER_FIELDS = Object.freeze([
+  'title', 'authors', 'affiliations', 'abstract', 'keywords', 'date',
+])
+
 /** A page override with no fields set. */
 function emptyPage() {
   return {}
@@ -288,7 +293,7 @@ export function parseDocumentConfig(frontmatter, defaults = {}) {
     }
     if (key.startsWith(PAPER_PREFIX)) {
       const field = key.slice(PAPER_PREFIX.length)
-      if (field === '') {
+      if (!PAPER_FIELDS.includes(field)) {
         warnings.push(key)
         continue
       }

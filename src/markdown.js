@@ -171,27 +171,57 @@ export function renderFrontmatter(source) {
   return `<table class="frontmatter"><tbody>${rows.join('')}</tbody></table>`
 }
 
-/** Named entities the renderer can emit, decoded before a heading becomes a slug. */
+/** Named HTML entities decoded before a heading becomes a slug and TOC label. */
 const NAMED_ENTITIES = {
-  '&amp;': '&',
-  '&lt;': '<',
-  '&gt;': '>',
-  '&quot;': '"',
-  '&#39;': "'",
-  '&#x27;': "'",
-  '&nbsp;': ' ',
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ',
+  copy: '©', reg: '®', trade: '™', hellip: '…', mdash: '—', ndash: '–',
+  lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”', times: '×', divide: '÷',
+  deg: '°', plusmn: '±', micro: 'µ', middot: '·', bull: '•', dagger: '†',
+  laquo: '«', raquo: '»', euro: '€', pound: '£', yen: '¥', cent: '¢',
+  sect: '§', para: '¶', eacute: 'é', egrave: 'è', agrave: 'à', ccedil: 'ç',
+  uuml: 'ü', ouml: 'ö', auml: 'ä', szlig: 'ß',
+}
+
+/**
+ * Decode the HTML entities a heading may contain.
+ *
+ * Numeric references are decoded generally; the named table covers the
+ * ordinary typography a document uses. An unknown name stays literal, exactly
+ * as a browser shows an invalid reference.
+ * @param text - text with entities.
+ * @returns the decoded text.
+ */
+function decodeEntities(text) {
+  return text.replace(/&(#[0-9]+|#x[0-9a-f]+|[a-z][a-z0-9]*);/gi, (match, body) => {
+    if (body.startsWith('#')) {
+      const hex = body[1] === 'x' || body[1] === 'X'
+      const code = hex ? Number.parseInt(body.slice(2), 16) : Number.parseInt(body.slice(1), 10)
+      if (!Number.isFinite(code) || code <= 0 || code > 0x10ffff) return match
+      try {
+        return String.fromCodePoint(code)
+      } catch {
+        return match
+      }
+    }
+    return NAMED_ENTITIES[body.toLowerCase()] ?? match
+  })
 }
 
 /**
  * Read the visible text of one rendered inline fragment.
+ *
+ * MathML annotations, pandoc footnote references, and the built-in footnote
+ * superscripts are removed, because they are metadata rather than visible
+ * heading text. Tags are then stripped and entities decoded.
  * @param html - rendered inline markup.
- * @returns the text with tags removed and known entities decoded.
+ * @returns the visible text.
  */
 function plainTextOf(html) {
-  return String(html)
+  return decodeEntities(String(html)
+    .replace(/<annotation\b[^>]*>[\s\S]*?<\/annotation\s*>/gi, '')
+    .replace(/<a\b[^>]*class="[^"]*footnote-ref[^"]*"[^>]*>[\s\S]*?<\/a\s*>/gi, '')
     .replace(/<sup class="footnote-ref"[\s\S]*?<\/sup>/gi, '')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&(?:amp|lt|gt|quot|#39|#x27|nbsp);/g, entity => NAMED_ENTITIES[entity] ?? entity)
+    .replace(/<[^>]*>/g, ''))
 }
 
 /**
@@ -199,7 +229,8 @@ function plainTextOf(html) {
  *
  * Unicode letters and digits stay, so a Chinese heading keeps a readable
  * anchor. Latin text is lower-cased, whitespace and punctuation collapse to a
- * single hyphen, and a heading with no letters falls back to `section`.
+ * single hyphen, and a heading with no letters falls back to the literal
+ * \`section\`.
  * @param text - the heading's visible text.
  * @returns the slug, never empty.
  */
@@ -209,42 +240,70 @@ function slugOf(text) {
     .trim()
     .toLowerCase()
     .replace(/[\s\u00a0]+/g, '-')
-    .replace(/[^\p{Letter}\p{Number}_-]+/gu, '-')
+    .replace(/[^\p{Letter}\p{Number}-]+/gu, '-')
     .replace(/-{2,}/g, '-')
     .replace(/^-+|-+$/g, '')
   return slug === '' ? 'section' : slug
 }
 
-/** A rendered heading element, with its level, id, and visible text. */
-const HEADING_TAG = /<h([1-6])\b([^>]*)>([\s\S]*?)<\/h\1\s*>/gi
+/** A rendered heading element; quoted attributes may contain a greater-than. */
+const HEADING_TAG = /<h([1-6])\b((?:[^>"']|"[^"]*"|'[^']*')*)>([\s\S]*?)<\/h\1\s*>/gi
+
+/**
+ * Remove one id attribute from a start tag's attribute text.
+ *
+ * Attributes are read as whole tokens, so an \`id\` substring inside another
+ * attribute's quoted value is not touched.
+ * @param attributes - attribute text after the tag name.
+ * @returns the attribute text without an id.
+ */
+function withoutIdAttribute(attributes) {
+  let result = ''
+  let last = 0
+  const pattern = /\s+([^\s=/>]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s>]+))?/g
+  for (const match of attributes.matchAll(pattern)) {
+    result += attributes.slice(last, match.index)
+    if (match[1].toLowerCase() !== 'id') result += match[0]
+    last = match.index + match[0].length
+  }
+  return result + attributes.slice(last)
+}
 
 /**
  * Give every heading a stable id and report them in document order.
  *
  * The ids are the TOC's link targets and the PDF outline's anchors. An id the
  * generator already wrote is replaced, so both generators share one scheme; a
- * repeated slug gains `-2`, `-3` and so on until the id is unique.
+ * repeated slug gains \`-2\`, \`-3\` and so on until the id is unique. Headings
+ * inside an HTML comment are left alone: a commented-out section is not part of
+ * the visible document.
  * @param html - a rendered document body.
  * @returns the body with ids, and the headings in order.
  */
 export function addHeadingIds(html) {
+  const comments = []
+  const protectedHtml = String(html ?? '').replace(/<!--[\s\S]*?-->/g, (match) => {
+    comments.push(match)
+    return '\u0000' + (comments.length - 1) + '\u0000'
+  })
   const used = new Set()
   const headings = []
-  const body = String(html ?? '').replace(HEADING_TAG, (_match, level, attributes, inner) => {
-    const label = plainTextOf(inner).trim()
-    const base = `md2pdf-h-${slugOf(label)}`
+  const body = protectedHtml.replace(HEADING_TAG, (_match, level, attributes, inner) => {
+    const label = plainTextOf(inner).trim() || 'section'
+    const base = 'md2pdf-h-' + slugOf(label)
     let id = base
     let suffix = 1
     while (used.has(id)) {
       suffix += 1
-      id = `${base}-${suffix}`
+      id = base + '-' + suffix
     }
     used.add(id)
     headings.push({ level: Number(level), id, label })
-    const rest = attributes.replace(/\s+id\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i, '')
-    return `<h${level} id="${id}"${rest}>${inner}</h${level}>`
+    const rest = withoutIdAttribute(attributes)
+    return '<h' + level + ' id="' + id + '"' + rest + '>' + inner + '</h' + level + '>'
   })
-  return { html: body, headings }
+  const restored = body.replace(/\u0000(\d+)\u0000/g, (_match, index) => comments[Number(index)] ?? '')
+  return { html: restored, headings }
 }
 
 /**
@@ -428,6 +487,9 @@ function opensBlock(lines, index) {
   if (/^[ \t]{0,3}((\*[ \t]*){3,}|(-[ \t]*){3,}|(_[ \t]*){3,})$/.test(line)) return true
   if (/^[ \t]{0,3}>/.test(line)) return true
   if (/^[ \t]{0,3}\$\$/.test(line)) return true
+  // The directive is a block, so a paragraph ends before it even without a
+  // blank line, matching the pandoc path.
+  if (/^[ \t]{0,3}<!--[ \t]*pagebreak[ \t]*-->[ \t]*$/i.test(line)) return true
   if (LIST_MARKER.test(line)) return true
   if (line.includes('|') && index + 1 < lines.length && isDelimiterRow(lines[index + 1])) return true
   const tag = /^[ \t]{0,3}<([a-zA-Z][a-zA-Z0-9-]*)\b/.exec(line)
@@ -612,8 +674,10 @@ function renderBlocks(lines, ctx) {
     const afterTable = tableNotePending
     tableNotePending = false
 
-    // An explicit page break is the author's control over pagination.
-    if (/^[ \t]{0,3}<!--[ \t]*pagebreak[ \t]*-->[ \t]*$/i.test(line)) {
+    // An explicit page break is the author's control over pagination. A line
+    // indented four columns is code, so the tab in front of a directive keeps
+    // it literal.
+    if (indentOf(line) < 4 && /^[ \t]{0,3}<!--[ \t]*pagebreak[ \t]*-->[ \t]*$/i.test(line)) {
       output.push('<div class="md2pdf-pagebreak"></div>')
       index += 1
       continue

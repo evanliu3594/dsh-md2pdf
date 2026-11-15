@@ -575,12 +575,16 @@ export async function prepareExport(request = {}, options = {}) {
     pageCss: pageOverrideCss(page),
     toc: document.toc,
     paper: document.paper,
+    lang: frontmatterText(frontmatter, 'lang') || options.lang,
     renderer: request?.renderer ?? options.renderer,
   }, { pandocPath: options.pandocPath })
 
-  // The paper fields belong to the built-in paper template; using them with
-  // another preset would silently drop them, so it is reported instead.
-  const paperWarnings = Object.keys(document.paper).length > 0 && preset.id !== 'paper'
+  // The paper fields belong to the built-in paper template; using a non-empty
+  // field with another preset would silently drop it, so it is reported. An
+  // empty value is not a field, and the parser already warns on unknown keys.
+  const paperFields = Object.values(document.paper)
+    .filter(value => typeof value === 'string' && value.trim() !== '')
+  const paperWarnings = paperFields.length > 0 && preset.id !== 'paper'
     ? ['pdf.paper.* needs the paper preset']
     : []
   // Unknown `pdf.*` keys, invalid row booleans, and unresolvable asset
@@ -827,7 +831,7 @@ export async function exportMarkdownToPdf(request, options = {}) {
     }
     // The same rule the DSH path uses; the saved page settings, the file's
     // front matter, and the request override all reach the printed page.
-    const { preset, page, document } = await resolveDocumentSetup(
+    const { preset, page, document, frontmatter } = await resolveDocumentSetup(
       markdown, request, options.page, documentDefaultsOf(options),
     )
     const browserPath = request?.browserPath ?? options.browserPath
@@ -843,6 +847,7 @@ export async function exportMarkdownToPdf(request, options = {}) {
       pageCss: pageOverrideCss(page),
       toc: document.toc,
       paper: document.paper,
+      lang: frontmatterText(frontmatter, 'lang') || options.lang,
       renderer: request?.renderer ?? options.renderer,
     }, { pandocPath: options.pandocPath })
 

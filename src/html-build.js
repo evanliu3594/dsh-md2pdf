@@ -62,15 +62,26 @@ export function normalizePandocFragment(html) {
 }
 
 /**
- * Replace an explicit page-break comment with the break element.
+ * Replace a standalone page-break comment with the break element.
  *
  * The built-in renderer emits the element itself; pandoc passes the raw HTML
- * comment through, so the fragment is normalized here for both generators.
+ * comment through. Only a whole line is a directive: an inline comment and a
+ * comment inside preformatted content stay literal, so a code sample never
+ * turns into a page break.
  * @param html - a rendered document body.
- * @returns the body with every page-break comment replaced.
+ * @returns the body with standalone page-break comments replaced.
  */
-function replacePageBreaks(html) {
-  return String(html).replace(/<!--[ \t]*pagebreak[ \t]*-->/gi, '<div class="md2pdf-pagebreak"></div>')
+export function normalizePageBreaks(html) {
+  const held = []
+  const protectedText = String(html).replace(/<(pre|code)\b[\s\S]*?<\/\1\s*>/gi, (match) => {
+    held.push(match)
+    return '\u0000' + (held.length - 1) + '\u0000'
+  })
+  const replaced = protectedText.replace(
+    /^[ \t]*<!--[ \t]*pagebreak[ \t]*-->[ \t]*$/gmi,
+    '<div class="md2pdf-pagebreak"></div>',
+  )
+  return replaced.replace(/\u0000(\d+)\u0000/g, (_match, index) => held[Number(index)] ?? '')
 }
 
 /**
@@ -213,7 +224,7 @@ export async function renderDocument(input, options = {}) {
     bodyHtml = renderMarkdown(body, math ? { math: mathRenderer } : {}).body
   }
 
-  const identified = addHeadingIds(replacePageBreaks(bodyHtml))
+  const identified = addHeadingIds(normalizePageBreaks(bodyHtml))
   const theme = input.theme ?? 'default'
   // The TOC is built from the same ids the body carries, so every link resolves
   // in the PDF viewer. The paper block belongs to the built-in paper template.

@@ -214,20 +214,20 @@ summary { cursor: default; font-weight: 600; }
 .footnotes { margin-top: 2.4em; padding-top: 0.8em; border-top: 1px solid #e2e5ea; font-size: 0.9em; }
 sup, sub { line-height: 0; }
 .md2pdf-toc { break-before: page; page-break-before: always; margin: 0 0 1.2em; }
-.md2pdf-toc-title { margin: 0 0 0.9em; font-size: 1.2em; font-weight: 650; text-align: center; }
+.md2pdf-toc-title { margin: 0 0 0.9em; font-size: 1.2em; font-weight: 650; text-align: center; text-indent: 0; }
 .md2pdf-toc ol { margin: 0; padding-left: 0; list-style: none; }
-.md2pdf-toc li { margin: 0.28em 0; }
+.md2pdf-toc li { margin: 0.28em 0; text-indent: 0; }
 .md2pdf-toc-level-2 { padding-left: 1.4em; }
 .md2pdf-toc-level-3 { padding-left: 2.8em; }
 .md2pdf-toc a { color: inherit; border-bottom: none; text-decoration: none; }
 .md2pdf-body { break-before: page; page-break-before: always; }
 .md2pdf-pagebreak { break-after: page; page-break-after: always; height: 0; margin: 0; }
 .md2pdf-paper { margin: 0 0 1.6em; text-align: center; }
-.md2pdf-paper-title { margin: 0 0 0.5em; font-size: 1.8em; font-weight: 700; line-height: 1.35; }
-.md2pdf-paper-authors { margin: 0 0 0.3em; }
-.md2pdf-paper-affiliations { margin: 0 0 0.6em; font-size: 0.86em; color: #4a5158; }
-.md2pdf-paper-date { margin: 0 0 1em; font-size: 0.86em; color: #4a5158; }
-.md2pdf-paper-abstract, .md2pdf-paper-keywords { text-align: left; font-size: 0.9em; margin: 0.6em 0; }
+.md2pdf-paper-title { margin: 0 0 0.5em; font-size: 1.8em; font-weight: 700; line-height: 1.35; text-indent: 0; }
+.md2pdf-paper-authors { margin: 0 0 0.3em; text-indent: 0; }
+.md2pdf-paper-affiliations { margin: 0 0 0.6em; font-size: 0.86em; color: #4a5158; text-indent: 0; }
+.md2pdf-paper-date { margin: 0 0 1em; font-size: 0.86em; color: #4a5158; text-indent: 0; }
+.md2pdf-paper-abstract, .md2pdf-paper-keywords { text-align: left; font-size: 0.9em; margin: 0.6em 0; text-indent: 0; }
 .md2pdf-paper-label { font-weight: 650; }
 `.trim()
 }
@@ -263,6 +263,10 @@ export function buildHtml(input, page = DEFAULT_PAGE) {
   const body = input.bodyAfterToc === true
     ? `<div class="md2pdf-body">\n${input.body}\n</div>`
     : input.body
+  // The optional blocks carry their own trailing newline, so a document with
+  // neither a paper block nor a TOC keeps exactly the previous body markup.
+  const paperPrefix = paper === '' ? '' : paper + '\n'
+  const tocPrefix = toc === '' ? '' : toc + '\n'
   // Four layers, later winning: the structural sheet, the selected preset, the
   // user's own rules, and finally the explicit page override for this export.
   const theme = typeof input.themeCss === 'string' && input.themeCss.trim() !== ''
@@ -292,10 +296,8 @@ ${pageCss}
 </head>
 <body>
 <main>
-${paper}
-${frontmatter}
-${toc}
-${body}
+${paperPrefix}${frontmatter}
+${tocPrefix}${body}
 </main>
 </body>
 </html>

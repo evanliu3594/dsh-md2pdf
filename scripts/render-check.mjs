@@ -3,8 +3,8 @@
  * Run: node scripts/render-check.mjs
  */
 import { buildHtml, DEFAULT_PAGE } from '../src/document.js'
-import { parseFrontmatter, renderFrontmatter, renderMarkdown, splitFrontmatter } from '../src/markdown.js'
-import { renderDocument, sanitizeFragment } from '../src/html-build.js'
+import { addHeadingIds, parseFrontmatter, renderFrontmatter, renderMarkdown, splitFrontmatter } from '../src/markdown.js'
+import { normalizePageBreaks, renderDocument, sanitizeFragment } from '../src/html-build.js'
 import { DEFAULT_THEME, THEMES, resolveTheme, themeCss } from '../src/themes.js'
 
 let failures = 0
@@ -258,12 +258,14 @@ expectContains('toc links a level one heading', tocDoc.html, '<a href="#md2pdf-h
 expectContains('toc links a level two heading', tocDoc.html, '<a href="#md2pdf-h-第一节">第一节</a>')
 expectContains('toc links a level three heading', tocDoc.html, '<a href="#md2pdf-h-小节">小节</a>')
 expectMissing('toc excludes level four', tocDoc.html, 'href="#md2pdf-h-四级"')
-expectContains('toc has a title', tocDoc.html, 'md2pdf-toc-title')
-expectContains('toc title is Chinese by default', tocDoc.html, '目录')
+expectContains('toc has a title element', tocDoc.html, '<p class="md2pdf-toc-title">目录</p>')
 expectTrue('toc starts a new page', /\.md2pdf-toc\s*\{[^}]*break-before: page/.test(tocDoc.html))
 expectContains('the body follows the toc on a new page', tocDoc.html, '<div class="md2pdf-body">')
-expectMissing('toc has no page numbers', tocDoc.html, 'class="pageNumber"')
-expectTrue('toc precedes the body', tocDoc.html.indexOf('md2pdf-toc-title') < tocDoc.html.indexOf('<h1 id="md2pdf-h-第一章"'))
+const tocNav = /<nav class="md2pdf-toc">[\s\S]*?<\/nav>/.exec(tocDoc.html)?.[0] ?? ''
+expectTrue('the toc nav exists', tocNav !== '')
+expectMissing('the toc nav carries no page numbers', tocNav, 'pageNumber')
+expectTrue('toc precedes the body',
+  tocDoc.html.indexOf('<p class="md2pdf-toc-title">') < tocDoc.html.indexOf('<h1 id="md2pdf-h-第一章"'))
 const plainDoc = await renderDocument({ markdown: '# A', title: 'T' })
 expectMissing('no toc block by default', plainDoc.html, '<nav class="md2pdf-toc">')
 expectMissing('no body wrapper without a toc', plainDoc.html, '<div class="md2pdf-body">')
@@ -316,6 +318,67 @@ const escapedPaper = await renderDocument({
 })
 expectContains('paper title is escaped', escapedPaper.html, '&lt;b&gt;x&lt;/b&gt;')
 expectContains('paper authors are escaped', escapedPaper.html, 'a &amp; b')
+
+
+// ---- Page-break block rules -------------------------------------------------
+expectContains('a tab-indented directive stays code',
+  html('A\n\n\t<!-- pagebreak -->\n\nB'), '<pre><code>&lt;!-- pagebreak --&gt;</code></pre>')
+expectMissing('a tab-indented directive is not a break',
+  html('A\n\n\t<!-- pagebreak -->\n\nB'), '<div class="md2pdf-pagebreak">')
+expectContains('a four-space directive stays code',
+  html('A\n\n    <!-- pagebreak -->\n\nB'), '<pre><code>&lt;!-- pagebreak --&gt;</code></pre>')
+expectContains('a directive after a paragraph is a block',
+  html('A\n<!-- pagebreak -->\nB'), '<div class="md2pdf-pagebreak"></div>')
+expectContains('a directive closes the paragraph', html('A\n<!-- pagebreak -->\nB'), '<p>A</p>')
+expectContains('a fenced directive stays code',
+  html('```\n<!-- pagebreak -->\n```'), '&lt;!-- pagebreak --&gt;')
+expectMissing('a fenced directive is not a break',
+  html('```\n<!-- pagebreak -->\n```'), 'md2pdf-pagebreak')
+
+// The fragment normalizer only replaces a standalone comment block.
+expectContains('a standalone comment becomes a break',
+  normalizePageBreaks('<p>a</p>\n<!-- pagebreak -->\n<p>b</p>'), '<div class="md2pdf-pagebreak"></div>')
+expectMissing('an inline comment stays text',
+  normalizePageBreaks('<p>a <!-- pagebreak --> b</p>'), '<div class="md2pdf-pagebreak">')
+expectMissing('a comment inside pre stays code',
+  normalizePageBreaks('<pre>\n<!-- pagebreak -->\n</pre>'), '<div class="md2pdf-pagebreak">')
+
+// ---- Language reaches the shell and the TOC --------------------------------
+const englishDoc = await renderDocument({ markdown: '# A', title: 'T', toc: true, lang: 'en-US' })
+expectContains('the document language reaches html', englishDoc.html, '<html lang="en-US">')
+expectContains('the english toc title is used', englishDoc.html, '<p class="md2pdf-toc-title">Contents</p>')
+
+// ---- Heading text, ids, and escaped markup ---------------------------------
+const entityHeading = addHeadingIds('<h2>&copy; 2026</h2>')
+expectEqual('an entity heading label is decoded', entityHeading.headings[0].label, '© 2026')
+expectEqual('an entity heading id is built from the text', entityHeading.headings[0].id, 'md2pdf-h-2026')
+const numericHeading = addHeadingIds('<h2>&#x1F600; 标题</h2>')
+expectEqual('a numeric entity is decoded', numericHeading.headings[0].label, '😀 标题')
+const mathHeading = addHeadingIds('<h2>Formula <math><semantics><mrow><mi>E</mi></mrow><annotation encoding="application/x-tex">E=mc^2</annotation></semantics></math> end</h2>')
+expectEqual('a math annotation is not part of the label', mathHeading.headings[0].label, 'Formula E end')
+expectEqual('a math annotation is not part of the id', mathHeading.headings[0].id, 'md2pdf-h-formula-e-end')
+const pandocNote = addHeadingIds('<h2>A<a class="footnote-ref" href="#fn1" id="fnref1"><sup>1</sup></a></h2>')
+expectEqual('a pandoc footnote does not enter the label', pandocNote.headings[0].label, 'A')
+const commented = addHeadingIds('<!-- <h2>Hidden</h2> -->\n<h2>Shown</h2>')
+expectEqual('a commented heading is not inventoried', commented.headings.length, 1)
+expectEqual('a commented heading is not given an id', commented.html.includes('md2pdf-h-hidden'), false)
+const attrHeading = addHeadingIds('<h2 title="a id=b">x</h2>')
+expectContains('a quoted id lookalike survives', attrHeading.html, 'title="a id=b"')
+expectEqual('the attribute id is replaced once', attrHeading.html.split('id="md2pdf-h-x"').length - 1, 1)
+const greaterAttr = addHeadingIds('<h2 title="a>b">x</h2>')
+expectContains('an attribute may contain a greater-than', greaterAttr.html, 'title="a>b"')
+expectEqual('the greater-than heading gets one id', greaterAttr.headings[0].id, 'md2pdf-h-x')
+const imageHeading = renderMarkdown('# ![Logo](logo.png)').headings[0]
+expectEqual('an image-only heading gets a fallback label', imageHeading.label, 'section')
+expectContains('an underscore folds to a hyphen', html('# foo_bar'), 'id="md2pdf-h-foo-bar"')
+
+// ---- TOC and paper paragraphs reset the preset indentation -----------------
+expectTrue('the toc title resets the paragraph indent',
+  /\.md2pdf-toc-title\s*\{[^}]*text-indent:\s*0/.test(tocDoc.html))
+expectTrue('the paper block resets the paragraph indent',
+  /\.md2pdf-paper-title\s*\{[^}]*text-indent:\s*0/.test(paperDoc.html))
+expectTrue('the body after a toc starts a page',
+  /\.md2pdf-body\s*\{[^}]*break-before:\s*page/.test(tocDoc.html))
 
 process.stdout.write(`\n${checks - failures}/${checks} checks passed\n`)
 process.exit(failures === 0 ? 0 : 1)
