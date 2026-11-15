@@ -93,8 +93,10 @@ Windows machine. Each case is listed with its expected result in
 docs/V2-VERIFICATION.md.
 
 - S2 is complete on macOS: all eight cases passed on 2026-11-15.
-- S3 agent broker: client closed mid-job, two windows, cancellation. The
-  plain tool export and the browser engine passed on 2026-11-15.
+- S3 agent broker: client closed mid-job and cancellation. The plain tool
+  export and the browser engine passed on 2026-11-15. The two-window case
+  cannot run on this install, which cannot open a second DSH window; the
+  busy-claim rule is covered by the print-jobs suite.
 - S4 preset bundle and history: export, import with conflicts, history list,
   restore.
 - Windows matrix: link and restart, S2/S3/S4 equivalents, Chinese/space paths,
