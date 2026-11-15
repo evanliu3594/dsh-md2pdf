@@ -1049,10 +1049,19 @@ window.__ModuleLoader__.load({
         if (state.stopped) return
         const { response, payload } = answer
         if (response.status === 204) continue
-        if (!response.ok
-          || payload === null
-          || typeof payload.printUrl !== 'string'
-          || typeof payload.finishToken !== 'string') {
+        if (!response.ok || payload === null) {
+          await sleep(BROKER_RETRY_MS)
+          continue
+        }
+        // A claimed job the client cannot run must be reported, or it stays
+        // claimed until the Host deadline with no print and no failure.
+        const usable = typeof payload.printUrl === 'string' && payload.printUrl !== ''
+          && typeof payload.finishToken === 'string' && payload.finishToken !== ''
+          && payload.printOptions !== null && typeof payload.printOptions === 'object'
+        if (!usable) {
+          if (typeof payload.finishToken === 'string' && payload.finishToken !== '') {
+            await reportBrokerFailure(payload.finishToken, 'client-error')
+          }
           await sleep(BROKER_RETRY_MS)
           continue
         }

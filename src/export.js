@@ -127,6 +127,28 @@ function absoluteSource(path, cwd) {
 }
 
 /**
+ * Validate one export source before any printer or engine is chosen.
+ *
+ * A bad path is the caller's own mistake, so it must be reported before the
+ * tool waits for a client or reports a printer problem. The same three
+ * refusals are shared by both export paths and the agent tool.
+ * @param request - a request carrying `path` and an optional `cwd`.
+ * @returns the absolute source path.
+ * @throws {PdfError} for a missing path, a non-markdown name, a missing file, or
+ *   a non-file.
+ */
+async function inspectSource(request) {
+  const sourcePath = absoluteSource(request?.path, request?.cwd)
+  if (!isMarkdownPath(sourcePath)) {
+    throw new PdfError('not-markdown', `not a markdown file: ${sourcePath}`)
+  }
+  const info = await stat(sourcePath).catch(() => null)
+  if (info === null) throw new PdfError('not-found', `file not found: ${sourcePath}`)
+  if (!info.isFile()) throw new PdfError('not-a-file', `not a regular file: ${sourcePath}`)
+  return sourcePath
+}
+
+/**
  * Compute the only PDF target this plugin may write for one source.
  * @param sourcePath - absolute markdown path.
  * @returns the absolute target beside the source.
@@ -521,14 +543,7 @@ async function commitFinish(job, finishToken, pdfBytes, jobs, options) {
  * @throws {PdfError} for a refused source, page, or preset, or a failed server.
  */
 export async function prepareExport(request = {}, options = {}) {
-  const sourcePath = absoluteSource(request?.path, request?.cwd)
-  if (!isMarkdownPath(sourcePath)) {
-    throw new PdfError('not-markdown', `not a markdown file: ${sourcePath}`)
-  }
-  const info = await stat(sourcePath).catch(() => null)
-  if (info === null) throw new PdfError('not-found', `file not found: ${sourcePath}`)
-  if (!info.isFile()) throw new PdfError('not-a-file', `not a regular file: ${sourcePath}`)
-
+  const sourcePath = await inspectSource(request)
   const markdown = await readFile(sourcePath, 'utf8')
   if (markdown.includes('\u0000')) {
     throw new PdfError('not-text', `file is not plain text: ${sourcePath}`)
@@ -794,14 +809,7 @@ export async function openFinishedExport({ finishToken } = {}, options = {}) {
  * @throws {PdfError} for every refusal the caller can act on.
  */
 export async function exportMarkdownToPdf(request, options = {}) {
-  const sourcePath = absoluteSource(request?.path, request?.cwd)
-  if (!isMarkdownPath(sourcePath)) {
-    throw new PdfError('not-markdown', `not a markdown file: ${sourcePath}`)
-  }
-  const info = await stat(sourcePath).catch(() => null)
-  if (info === null) throw new PdfError('not-found', `file not found: ${sourcePath}`)
-  if (!info.isFile()) throw new PdfError('not-a-file', `not a regular file: ${sourcePath}`)
-
+  const sourcePath = await inspectSource(request)
   const directory = dirname(sourcePath)
   const name = basename(sourcePath)
   const stem = name.slice(0, name.length - extname(name).length)
@@ -1132,6 +1140,9 @@ async function waitForToolPresence(jobs, { signal, waitMs } = {}) {
 export async function exportTool(request = {}, options = {}) {
   const signal = options.signal
   if (signal !== undefined && signal.aborted === true) throw abortErrorOf(signal)
+  // A bad source is the caller's mistake, not a printer problem: report it
+  // before waiting ten seconds for a client.
+  await inspectSource(request)
   const jobs = resolvePrintJobs(options)
   const printEngine = toolPrintEngine(options.printEngine)
   // An explicit browser choice never needs a client and never waits.

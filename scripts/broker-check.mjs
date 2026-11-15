@@ -15,7 +15,7 @@
  *
  * Run: node scripts/broker-check.mjs
  */
-import { copyFile, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1041,6 +1041,26 @@ try {
   expectEqual('a later finish refuses a failed job', finishSecondOutcome.error?.code, 'state-conflict')
   expectEqual('a refused finish writes no PDF', (await readdir(work)).includes('race2.pdf'), false)
 
+  // 6a. A bad source is the caller's mistake, not a printer problem: it must
+  // be reported before the presence wait or the engine choice.
+  const missingTool = await capture(async () => exportTool(
+    { path: join(work, 'does-not-exist.md') },
+    { printEngine: 'dsh', presenceWaitMs: 0 },
+  ))
+  expectEqual('a missing source is reported before the engine choice', missingTool?.code, 'not-found')
+  const markdownDir = join(work, 'folder.md')
+  await mkdir(markdownDir, { recursive: true })
+  const directoryTool = await capture(async () => exportTool(
+    { path: markdownDir },
+    { printEngine: 'dsh', presenceWaitMs: 0 },
+  ))
+  expectEqual('a directory source is refused before the engine choice', directoryTool?.code, 'not-a-file')
+  const textTool = await capture(async () => exportTool(
+    { path: join(work, 'notes.txt') },
+    { printEngine: 'dsh', presenceWaitMs: 0 },
+  ))
+  expectEqual('a non-markdown source is refused before the engine choice', textTool?.code, 'not-markdown')
+
   // 6b. A commit owns its job once the write starts. The broker poll sweeps
   // expiry every 100 ms, so without a lease a slow rename can land after the
   // job expired and leave a written PDF behind a timeout result.
@@ -1109,6 +1129,8 @@ try {
   expectTrue('the client prints with the brokered options', client.includes('job.printOptions'))
   expectTrue('the client finishes with the brokered token', client.includes('job.finishToken'))
   expectTrue('the client reports a broker failure by finish token', client.includes('reportBrokerFailure'))
+  expectTrue('the client reports an unusable claimed payload',
+    client.includes("reportBrokerFailure(payload.finishToken, 'client-error')"))
   expectTrue('the client send a reason with a broker failure', client.includes('finishToken, reason'))
   expectTrue('the client stops the broker loop on dispose', client.includes('stopPrintBroker'))
   expectTrue('the client aborts an in-flight poll', client.includes('.abort()'))
