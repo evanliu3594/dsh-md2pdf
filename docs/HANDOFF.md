@@ -3,6 +3,7 @@
 Branch: v2-dsh-printing
 Base: 15dfbd9 (main at the branch point)
 Code head: 4343056 (32 commits); this record is one docs commit later
+Merged: 02c0344 (v2-dsh-printing into main, 2026-11-15)
 Date: 2026-11-15
 Design: docs/DESIGN.md
 Verification: docs/V2-VERIFICATION.md
@@ -183,7 +184,7 @@ S2 also found two print-option defects; both are fixed at 4343056:
 
 1. Manual gates are recorded in docs/V2-VERIFICATION.md; the Windows run
    passed on 2026-11-15.
-2. Merge v2-dsh-printing into main; the user approved the merge on 2026-11-15.
+2. Merged v2-dsh-printing into main at 02c0344 on 2026-11-15.
 3. Keep the version at 0.1.0 until release. No runtime dependency was added.
 4. If the samples or docs images should reflect the new renderer output,
    regenerate them with a one-off MD2PDF_HOME before publishing.
