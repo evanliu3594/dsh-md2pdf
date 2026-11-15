@@ -15,6 +15,18 @@
 /** Default footer when page numbers are on and no footer text is set. */
 export const DEFAULT_PAGE_FOOTER = '第 {page} 页 / 共 {total} 页'
 
+/**
+ * An inert template for the unconfigured side of a printed page.
+ *
+ * Chromium replaces a falsy header or footer template with its own default:
+ * the header shows the date and the document title, the footer shows the URL
+ * and the page number. An empty string is falsy, so a page with only a header
+ * would also gain Chromium's URL (the loopback print URL carries the asset
+ * token) and an unrequested page number. A non-empty invisible template keeps
+ * the unconfigured side blank.
+ */
+export const INERT_HEADER_FOOTER_TEMPLATE = '<span></span>'
+
 /** Placeholders a header or footer may carry. */
 const PLACEHOLDER = /\{(page|total|title|author|date)\}/g
 
@@ -182,13 +194,18 @@ export function buildPrintOptions(config = {}, margins = {}, context = {}) {
     date: typeof context.date === 'string' && context.date !== '' ? context.date : today(),
   }
   const outline = source.outline ?? document.outline
+  const displayHeaderFooter = pageNumbers || headerText !== '' || footer !== ''
+  const sideTemplate = (text, render) => {
+    if (!displayHeaderFooter) return ''
+    return text === '' ? INERT_HEADER_FOOTER_TEMPLATE : render(text, templateContext)
+  }
   return {
     printBackground: true,
     preferCSSPageSize: true,
     margins: normalizeMargins(margins),
-    displayHeaderFooter: pageNumbers || headerText !== '' || footer !== '',
-    headerTemplate: headerText === '' ? '' : renderHeaderTemplate(headerText, templateContext),
-    footerTemplate: footer === '' ? '' : renderFooterTemplate(footer, templateContext),
+    displayHeaderFooter,
+    headerTemplate: sideTemplate(headerText, renderHeaderTemplate),
+    footerTemplate: sideTemplate(footer, renderFooterTemplate),
     generateDocumentOutline: outline !== false,
     pageRanges: '',
   }

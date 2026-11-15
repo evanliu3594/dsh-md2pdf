@@ -64,9 +64,10 @@ const work = await mkdtemp(join(tmpdir(), 'dsh-md2pdf-options-work-'))
 process.env['MD2PDF_HOME'] = home
 
 const {
-  buildPrintOptions, DEFAULT_PAGE_FOOTER, renderFooterTemplate, renderHeaderTemplate,
+  buildPrintOptions, DEFAULT_PAGE_FOOTER, INERT_HEADER_FOOTER_TEMPLATE,
+  renderFooterTemplate, renderHeaderTemplate,
 } = await import('../src/print-options.js')
-const { mergeDocumentConfig, parseDocumentConfig } = await import('../src/document-config.js')
+const { documentDefaults, mergeDocumentConfig, parseDocumentConfig } = await import('../src/document-config.js')
 const { createPrintJobs } = await import('../src/print-jobs.js')
 const { finishExport, prepareExport } = await import('../src/export.js')
 
@@ -121,9 +122,10 @@ try {
   expectIncludes('the total span is still rendered', renderFooterTemplate('{total}'),
     '<span class="totalPages"></span>')
 
-  // Page numbers appear on every page; no cover-only branch exists.
-  expectExcludes('the page number has no first-page branch', centeredFooter, ':first')
-  expectExcludes('the page number has no cover branch', centeredFooter, 'cover')
+  // Page numbers apply to every page: no page range narrows the print and the
+  // footer template cannot hide itself on one page.
+  expectEqual('the print range stays unrestricted', buildPrintOptions({ pageNumbers: true }, {}).pageRanges, '')
+  expectExcludes('the footer cannot hide itself on one page', centeredFooter, 'display:none')
 
   // ---- buildPrintOptions --------------------------------------------------
 
@@ -149,7 +151,8 @@ try {
     '<span class="pageNumber"></span>')
   expectIncludes('the default footer carries the total span', numbered.footerTemplate,
     '<span class="totalPages"></span>')
-  expectEqual('page numbers alone leave the header empty', numbered.headerTemplate, '')
+  expectEqual('page numbers alone leave the header blank', numbered.headerTemplate, INERT_HEADER_FOOTER_TEMPLATE)
+  expectEqual('the default footer is the design text', DEFAULT_PAGE_FOOTER, '第 {page} 页 / 共 {total} 页')
   expectIncludes('the default footer text is exported', DEFAULT_PAGE_FOOTER, '{page}')
 
   const customFooter = buildPrintOptions({ footer: 'Page {page} / {total}' }, margins)
@@ -163,11 +166,12 @@ try {
   const headerOnly = buildPrintOptions({ header: 'T' }, margins)
   expectEqual('a header alone enables the header and footer area', headerOnly.displayHeaderFooter, true)
   expectIncludes('the header text is kept', headerOnly.headerTemplate, 'T')
-  expectEqual('a header alone leaves the footer empty', headerOnly.footerTemplate, '')
+  expectEqual('a header alone keeps the footer blank', headerOnly.footerTemplate, INERT_HEADER_FOOTER_TEMPLATE)
 
   const footerOnly = buildPrintOptions({ footer: 'F' }, margins)
   expectEqual('a footer alone enables the header and footer area', footerOnly.displayHeaderFooter, true)
   expectIncludes('the footer text is kept', footerOnly.footerTemplate, 'F')
+  expectEqual('a footer alone keeps the header blank', footerOnly.headerTemplate, INERT_HEADER_FOOTER_TEMPLATE)
 
   const offWins = buildPrintOptions({ pageNumbers: false, header: '', footer: '' }, margins)
   expectEqual('empty text keeps the header and footer area off', offWins.displayHeaderFooter, false)
@@ -177,6 +181,18 @@ try {
 
   const stringFlag = buildPrintOptions({ pageNumbers: 'true' }, margins)
   expectEqual('a string flag does not enable page numbers', stringFlag.displayHeaderFooter, false)
+
+  // The row configuration is read strictly: a quoted YAML boolean is reported,
+  // not coerced into the opposite value.
+  const validDefaults = documentDefaults({ pageNumbers: true, outline: false })
+  expectEqual('a row page-number default is read', validDefaults.defaults.pageNumbers, true)
+  expectEqual('a row outline default is read', validDefaults.defaults.outline, false)
+  expectEqual('valid row defaults warn nothing', validDefaults.warnings.join(','), '')
+  const quotedDefaults = documentDefaults({ pageNumbers: 'true', outline: 'false' })
+  expectEqual('a quoted row boolean is not coerced', quotedDefaults.defaults.pageNumbers, undefined)
+  expectEqual('a quoted row boolean is reported', quotedDefaults.warnings.join(','),
+    'pageNumbers must be true or false,outline must be true or false')
+  expectEqual('an absent row field stays absent', Object.keys(documentDefaults({}).defaults).join(','), '')
 
   const nested = buildPrintOptions({ document: { pageNumbers: true }, outline: false }, margins)
   expectEqual('a nested document config enables page numbers', nested.displayHeaderFooter, true)
@@ -257,6 +273,43 @@ try {
   const rowOutline = await prepareExport({ path: plain }, { ...options, outline: false })
   expectEqual('a row outline default reaches prepare', rowOutline.printOptions.generateDocumentOutline, false)
   await finishExport({ finishToken: rowOutline.finishToken, pdfBytes: PDF }, options)
+
+  // One configured side must not let Chromium fill the other side with its own
+  // default header or footer.
+  const headerOnlyFile = join(work, 'header-only.md')
+  await writeFile(headerOnlyFile, ['---', 'pdf.header: 内部资料', '---', '', '# 正文', ''].join('\n'), 'utf8')
+  const headerOnlyPrepared = await prepareExport({ path: headerOnlyFile }, options)
+  expectEqual('a header alone enables the header area', headerOnlyPrepared.printOptions.displayHeaderFooter, true)
+  expectIncludes('a header alone renders the header', headerOnlyPrepared.printOptions.headerTemplate, '内部资料')
+  expectEqual('a header alone keeps the footer blank',
+    headerOnlyPrepared.printOptions.footerTemplate, INERT_HEADER_FOOTER_TEMPLATE)
+  await finishExport({ finishToken: headerOnlyPrepared.finishToken, pdfBytes: PDF }, options)
+
+  const numbersOnlyFile = join(work, 'numbers-only.md')
+  await writeFile(numbersOnlyFile, ['---', 'pdf.pageNumbers: true', '---', '', '# 正文', ''].join('\n'), 'utf8')
+  const numbersOnlyPrepared = await prepareExport({ path: numbersOnlyFile }, options)
+  expectEqual('page numbers alone keep the header blank',
+    numbersOnlyPrepared.printOptions.headerTemplate, INERT_HEADER_FOOTER_TEMPLATE)
+  expectIncludes('page numbers alone print the default footer',
+    numbersOnlyPrepared.printOptions.footerTemplate, '共 ')
+  await finishExport({ finishToken: numbersOnlyPrepared.finishToken, pdfBytes: PDF }, options)
+
+  const footerOnlyFile = join(work, 'footer-only.md')
+  await writeFile(footerOnlyFile, ['---', 'pdf.footer: 页脚', '---', '', '# 正文', ''].join('\n'), 'utf8')
+  const footerOnlyPrepared = await prepareExport({ path: footerOnlyFile }, options)
+  expectEqual('a footer alone keeps the header blank',
+    footerOnlyPrepared.printOptions.headerTemplate, INERT_HEADER_FOOTER_TEMPLATE)
+  expectIncludes('a footer alone renders the footer',
+    footerOnlyPrepared.printOptions.footerTemplate, '页脚')
+  await finishExport({ finishToken: footerOnlyPrepared.finishToken, pdfBytes: PDF }, options)
+
+  const warnedPrepared = await prepareExport({ path: plain }, {
+    ...options,
+    configWarnings: ['outline must be true or false'],
+  })
+  expectEqual('row config warnings reach the export',
+    warnedPrepared.warnings.includes('outline must be true or false'), true)
+  await finishExport({ finishToken: warnedPrepared.finishToken, pdfBytes: PDF }, options)
 
   const frontMatter = join(work, 'front.md')
   await writeFile(frontMatter, [
@@ -340,11 +393,17 @@ try {
 
   const clientSource = await readFile(join(here, '..', 'client.js'), 'utf8')
   expectTrue('the client forwards the host print options unchanged',
-    clientSource.includes('element.printToPDF(job.printOptions)'))
-  expectTrue('the client builds no header template',
-    !clientSource.includes('headerTemplate:'))
-  expectTrue('the client builds no outline option',
-    !clientSource.includes('generateDocumentOutline:'))
+    /\.printToPDF\(\s*job\.printOptions\s*[,)]/.test(clientSource))
+  expectTrue('the client never assigns to one print option',
+    !/printOptions\.[A-Za-z_$][\w$]*\s*=/.test(clientSource))
+  expectTrue('the client builds no header or footer template',
+    !/renderHeaderTemplate|renderFooterTemplate/.test(clientSource))
+
+  const indexSource = await readFile(join(here, '..', 'index.js'), 'utf8')
+  expectTrue('the host maps row defaults through documentDefaults',
+    indexSource.includes('documentDefaults(config)'))
+  expectTrue('the host forwards row warnings to the export',
+    indexSource.includes('configWarnings: rowDocument.warnings'))
 
   const packageText = await readFile(join(here, '..', 'package.json'), 'utf8')
   expectTrue('the test chain runs the print option checks',

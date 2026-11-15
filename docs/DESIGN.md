@@ -374,13 +374,15 @@ Client 把 Host 返回的参数原样传给 `<webview>.printToPDF()`：
 
 页边距从最终 `@page` 解析。禁止继续使用固定的 `page.marginMm`，否则公文预设的 37/26/35/28 mm 会被压成 18 mm。Host 传给 Client 的 `config.page` 是只含显式字段的 `PageOverride`；`landscape` 未设置时不传，交给 CSS `@page`。`displayHeaderFooter` 由页眉、页脚或页码任一启用决定。
 
+Chromium 把空字符串的页眉或页脚模板当作未设置，改用自带默认值：页眉显示日期与标题，页脚显示 URL 与页码。因此 `displayHeaderFooter` 为真时，未配置的一侧必须传一个非空且不可见的模板（`<span></span>`）。只有两侧都不启用时模板才为空。
+
 Host 在 `src/print-options.js` 生成参数，Client 原样转发；参数只由 Host 决定。
 
 页眉页脚模板由 Host 生成并转义：
 
 - 页码页脚默认居中，作用于所有页；v2 不做奇偶交替。
-- 页脚支持 `{page}`、`{total}`、`{title}`、`{date}`。
-- 页眉支持 `{title}`、`{author}`、`{date}`。
+- 页脚支持 `{page}`、`{total}`、`{title}`、`{author}`、`{date}`。
+- 页眉支持同样五个变量；未出现的变量保持字面文本。
 - 模板内联字体与字号；不加载外部资源。
 - `generateDocumentOutline` 用标题生成书签；标题需要稳定 id 时由渲染器补 slug。
 
@@ -622,7 +624,8 @@ document.fonts.check('16px "Family"', 'A')
 - PDF 写盘：`%PDF-`/`%%EOF`、临时文件、改名、Windows 占用模拟、符号链接目标、旧文件保留。
 - 预设 v2：迁移、导入导出、重名、历史、恢复。
 - 浏览器回退：现有 `awaitPdf` 用例继续。
-- 渲染器：标题 slug、分页指令、front matter 过滤、页眉页脚变量转义。
+- 渲染器：标题 slug、目录、分页指令、论文模板字段、front matter 过滤。
+- 打印参数：页眉页脚模板与变量转义、未配置一侧的空模板、居中页码、默认页脚、大纲开关、边距透传。
 
 ### 手动 spike
 

@@ -15,6 +15,7 @@
  */
 import { isAbsolute } from 'node:path'
 
+import { documentDefaults } from './src/document-config.js'
 import {
   describeCapability, exportMarkdownToPdf, exportTool, failPrintJob, finishExport, MARKDOWN_EXTENSIONS,
   openFinishedExport, prepareExport, resolvePrintJobs,
@@ -376,14 +377,17 @@ function failureResponse(error) {
  * @param config - optional row configuration; every field has a default.
  */
 export function apply(ctx, config) {
+  // Document defaults: page numbers are off until the row or a file asks for
+  // them; the PDF outline is on unless the row turns it off. A quoted YAML
+  // boolean is reported, not quietly coerced.
+  const rowDocument = documentDefaults(config)
   const options = {
     engine: config?.engine,
     printEngine: config?.printEngine,
     afterExport: config?.afterExport,
-    // Document defaults: page numbers are off until the row or a file asks for
-    // them; the PDF outline is on unless the row turns it off.
-    pageNumbers: config?.pageNumbers === true,
-    outline: config?.outline !== false,
+    pageNumbers: rowDocument.defaults.pageNumbers,
+    outline: rowDocument.defaults.outline,
+    configWarnings: rowDocument.warnings,
     browserPath: config?.browserPath,
     pandocPath: config?.pandocPath,
     renderer: config?.renderer,

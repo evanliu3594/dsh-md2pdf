@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 
 import { scanAssets } from './asset-scan.js'
-import { mergeDocumentConfig } from './document-config.js'
+import { documentDefaults, mergeDocumentConfig } from './document-config.js'
 import { DEFAULT_PAGE } from './document.js'
 import { baseHrefOf, renderDocument } from './html-build.js'
 import { parseFrontmatter, splitFrontmatter } from './markdown.js'
@@ -189,10 +189,7 @@ async function resolveDocumentSetup(markdown, request, fallbackPage, documentDef
  * @returns the document defaults, with only the fields the row sets.
  */
 function documentDefaultsOf(options = {}) {
-  const defaults = {}
-  if (options.pageNumbers !== undefined) defaults.pageNumbers = options.pageNumbers === true
-  if (options.outline !== undefined) defaults.outline = options.outline !== false
-  return defaults
+  return documentDefaults(options).defaults
 }
 
 /**
@@ -564,9 +561,18 @@ export async function prepareExport(request = {}, options = {}) {
   const paperWarnings = Object.keys(document.paper).length > 0 && preset.id !== 'paper'
     ? ['pdf.paper.* needs the paper preset']
     : []
-  // Unknown `pdf.*` keys and unresolvable asset references are warnings: the
-  // PDF still prints, and the client reports what was skipped.
-  const warnings = [...mergeWarnings, ...paperWarnings, ...await scanAssets(rendered.html, directory)]
+  // Unknown `pdf.*` keys, invalid row booleans, and unresolvable asset
+  // references are warnings: the PDF still prints, and the client reports what
+  // was skipped.
+  const configWarnings = Array.isArray(options.configWarnings)
+    ? options.configWarnings.filter(warning => typeof warning === 'string')
+    : []
+  const warnings = [
+    ...configWarnings,
+    ...mergeWarnings,
+    ...paperWarnings,
+    ...await scanAssets(rendered.html, directory),
+  ]
 
   // Header, footer, page numbers, and the outline come from the merged document
   // config; margins come from the final @page box, never from a fixed default.

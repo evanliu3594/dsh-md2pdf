@@ -229,6 +229,29 @@ function applyDocumentOverride(document, source, label) {
 }
 
 /**
+ * Read the row configuration that seeds the document config.
+ *
+ * Only the two literal booleans are accepted. A quoted YAML value such as
+ * "false" is not a boolean; it is reported instead of silently becoming true.
+ * @param config - row configuration.
+ * @returns the document defaults and one warning per invalid field.
+ */
+export function documentDefaults(config = {}) {
+  const source = config !== null && typeof config === 'object' ? config : {}
+  const defaults = {}
+  const warnings = []
+  for (const field of ['pageNumbers', 'outline']) {
+    if (!Object.hasOwn(source, field) || source[field] === undefined) continue
+    if (typeof source[field] === 'boolean') {
+      defaults[field] = source[field]
+      continue
+    }
+    warnings.push(`${field} must be true or false`)
+  }
+  return { defaults, warnings }
+}
+
+/**
  * Parse flat `pdf.*` front matter keys into page and document configuration.
  *
  * Recognised page keys are `pdf.page.size`, `pdf.page.marginMm`,
