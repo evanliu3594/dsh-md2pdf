@@ -12,6 +12,9 @@ node_modules/
 /README.pdf
 /samples/sample.pdf
 
+# npm pack output
+/*.tgz
+
 # Local engineering notes: design, plan, session ledger
 /specs/
 
