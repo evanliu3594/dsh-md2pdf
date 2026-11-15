@@ -297,6 +297,67 @@ try {
     fontMetadataHtml.includes('@page{margin:20mm}'), false)
   await finishExport({ finishToken: fontMetadata.finishToken, pdfBytes: PDF })
 
+  // The document config reaches the rendered page: a TOC links the heading ids,
+  // an explicit page break becomes the break element, and the paper fields
+  // render on the paper template's first body page.
+  const tocSource = join(work, 'toc.md')
+  await writeFile(tocSource, [
+    '---',
+    'pdf.toc: true',
+    '---',
+    '',
+    '# 第一章',
+    '',
+    '## 第一节',
+    '',
+    '正文。',
+    '',
+  ].join('\n'))
+  const tocPrepared = await prepareExport({ path: tocSource })
+  const tocHtml = await (await fetch(tocPrepared.printUrl)).text()
+  expectEqual('a front matter toc reaches the page',
+    tocHtml.includes('<nav class="md2pdf-toc">'), true)
+  expectEqual('the toc links the heading id',
+    tocHtml.includes('<a href="#md2pdf-h-第一章">第一章</a>'), true)
+  expectEqual('the toc page has no page numbers', tocHtml.includes('class="pageNumber"'), false)
+  await finishExport({ finishToken: tocPrepared.finishToken, pdfBytes: PDF })
+
+  const breakSource = join(work, 'break.md')
+  await writeFile(breakSource, 'A\n\n<!-- pagebreak -->\n\nB\n')
+  const breakPrepared = await prepareExport({ path: breakSource })
+  const breakHtml = await (await fetch(breakPrepared.printUrl)).text()
+  expectEqual('an explicit page break reaches the page',
+    breakHtml.includes('<div class="md2pdf-pagebreak"></div>'), true)
+  await finishExport({ finishToken: breakPrepared.finishToken, pdfBytes: PDF })
+
+  const paperFieldsSource = join(work, 'paper-fields.md')
+  await writeFile(paperFieldsSource, [
+    '---',
+    'pdf.paper.title: 题名',
+    'pdf.paper.authors: 张三',
+    '---',
+    '',
+    '# 引言',
+    '',
+  ].join('\n'))
+  const paperPrepared = await prepareExport({ path: paperFieldsSource, preset: 'paper' })
+  const paperHtml = await (await fetch(paperPrepared.printUrl)).text()
+  expectEqual('paper fields reach the paper page',
+    paperHtml.includes('<section class="md2pdf-paper">'), true)
+  expectEqual('paper authors reach the paper page',
+    paperHtml.includes('md2pdf-paper-authors">张三<'), true)
+  expectEqual('paper fields produce no warning on the paper preset',
+    paperPrepared.warnings.some(warning => warning.includes('paper preset')), false)
+  await finishExport({ finishToken: paperPrepared.finishToken, pdfBytes: PDF })
+
+  const larkPaperPrepared = await prepareExport({ path: paperFieldsSource, preset: 'lark' })
+  expectEqual('paper fields warn on another preset',
+    larkPaperPrepared.warnings.some(warning => warning.includes('paper preset')), true)
+  const larkPaperHtml = await (await fetch(larkPaperPrepared.printUrl)).text()
+  expectEqual('another preset renders no paper block',
+    larkPaperHtml.includes('<section class="md2pdf-paper">'), false)
+  await finishExport({ finishToken: larkPaperPrepared.finishToken, pdfBytes: PDF })
+
   // Flat `pdf.*` front matter configures the page and the preset. A request
   // preset outranks `pdf.preset`, which outranks the selected preset, and an
   // unknown `pdf.*` key is reported as a warning instead of blocking.
@@ -489,6 +550,42 @@ try {
   expectEqual('the fallback applies the selected preset page metadata',
     fallbackCalls.at(-1)?.includes('<style id="md2pdf-page">\n@page{margin:20mm}\n</style>'), true)
   expectEqual('the fallback reports the selected preset', fallbackPreset.value?.theme, 'paper')
+
+  // The fallback renders the same document config as the DSH path.
+  const fallbackToc = join(work, 'fallback-toc.md')
+  await writeFile(fallbackToc, [
+    '---',
+    'pdf.toc: true',
+    '---',
+    '',
+    '# Fallback heading',
+    '',
+    '## Fallback sub',
+    '',
+  ].join('\n'))
+  const fallbackTocRun = await outcome(() => exportMarkdownToPdf({ path: fallbackToc }, fallbackOptions))
+  expectEqual('the fallback exports a toc document', fallbackTocRun.value?.ok, true)
+  expectEqual('the fallback renders a toc',
+    fallbackCalls.at(-1)?.includes('<nav class="md2pdf-toc">'), true)
+  expectEqual('the fallback toc links the heading id',
+    fallbackCalls.at(-1)?.includes('href="#md2pdf-h-fallback-heading"'), true)
+
+  const fallbackPaper = join(work, 'fallback-paper.md')
+  await writeFile(fallbackPaper, [
+    '---',
+    'pdf.paper.title: 题名',
+    'pdf.paper.authors: 张三',
+    '---',
+    '',
+    '# 引言',
+    '',
+  ].join('\n'))
+  const fallbackPaperRun = await outcome(() => exportMarkdownToPdf({ path: fallbackPaper }, fallbackOptions))
+  expectEqual('the fallback exports a paper document', fallbackPaperRun.value?.ok, true)
+  expectEqual('the fallback renders the paper block',
+    fallbackCalls.at(-1)?.includes('<section class="md2pdf-paper">'), true)
+  expectEqual('the fallback renders paper authors',
+    fallbackCalls.at(-1)?.includes('md2pdf-paper-authors">张三<'), true)
 
   const fallbackFront = join(work, 'fallback-frontmatter.md')
   await writeFile(fallbackFront, [

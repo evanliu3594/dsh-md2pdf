@@ -554,12 +554,19 @@ export async function prepareExport(request = {}, options = {}) {
     theme: preset.id,
     themeCss: preset.css,
     pageCss: pageOverrideCss(page),
+    toc: document.toc,
+    paper: document.paper,
     renderer: request?.renderer ?? options.renderer,
   }, { pandocPath: options.pandocPath })
 
+  // The paper fields belong to the built-in paper template; using them with
+  // another preset would silently drop them, so it is reported instead.
+  const paperWarnings = Object.keys(document.paper).length > 0 && preset.id !== 'paper'
+    ? ['pdf.paper.* needs the paper preset']
+    : []
   // Unknown `pdf.*` keys and unresolvable asset references are warnings: the
   // PDF still prints, and the client reports what was skipped.
-  const warnings = [...mergeWarnings, ...await scanAssets(rendered.html, directory)]
+  const warnings = [...mergeWarnings, ...paperWarnings, ...await scanAssets(rendered.html, directory)]
 
   // Header, footer, page numbers, and the outline come from the merged document
   // config; margins come from the final @page box, never from a fixed default.
@@ -799,7 +806,7 @@ export async function exportMarkdownToPdf(request, options = {}) {
     }
     // The same rule the DSH path uses; the saved page settings, the file's
     // front matter, and the request override all reach the printed page.
-    const { preset, page } = await resolveDocumentSetup(
+    const { preset, page, document } = await resolveDocumentSetup(
       markdown, request, options.page, documentDefaultsOf(options),
     )
     const browserPath = request?.browserPath ?? options.browserPath
@@ -813,6 +820,8 @@ export async function exportMarkdownToPdf(request, options = {}) {
       theme: preset.id,
       themeCss: preset.css,
       pageCss: pageOverrideCss(page),
+      toc: document.toc,
+      paper: document.paper,
       renderer: request?.renderer ?? options.renderer,
     }, { pandocPath: options.pandocPath })
 

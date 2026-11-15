@@ -60,9 +60,9 @@ function expectTrue(label, condition) {
 
 const html = (source) => renderMarkdown(source).body
 
-expectContains('atx heading', html('# 标题'), '<h1>标题</h1>')
-expectContains('heading level six', html('###### six'), '<h6>six</h6>')
-expectContains('setext heading', html('Title\n====='), '<h1>Title</h1>')
+expectContains('atx heading', html('# 标题'), '<h1 id="md2pdf-h-标题">标题</h1>')
+expectContains('heading level six', html('###### six'), '<h6 id="md2pdf-h-six">six</h6>')
+expectContains('setext heading', html('Title\n====='), '<h1 id="md2pdf-h-title">Title</h1>')
 expectContains('bold', html('**粗**'), '<strong>粗</strong>')
 expectContains('italic', html('*斜*'), '<em>斜</em>')
 expectContains('strikethrough', html('~~gone~~'), '<del>gone</del>')
@@ -185,7 +185,7 @@ expectEqual('page override follows user css',
 expectContains('page override escapes closing tag',
   buildHtml({ title: 'T', body: '', pageCss: 'a{}</style><b>' }, DEFAULT_PAGE), '<\\/style>')
 expectMissing('no page override block when empty',
-  buildHtml({ title: 'T', body: '' }, DEFAULT_PAGE), 'md2pdf-page')
+  buildHtml({ title: 'T', body: '' }, DEFAULT_PAGE), '<style id="md2pdf-page">')
 
 // Presets: one default, three choices, and a theme layer between base and user CSS.
 expectEqual('default preset', DEFAULT_THEME, 'lark')
@@ -231,6 +231,91 @@ expectContains('render carries page override', rendered.html, '<style id="md2pdf
 expectEqual('render keeps page override after preset',
   rendered.html.indexOf('color:blue') < rendered.html.indexOf('body{font-size:12px}'), true)
 expectMissing('render hides pdf keys from frontmatter', rendered.html, 'pdf.header')
+
+// ---- Heading ids, table of contents, page breaks, paper fields -------------
+
+// Heading ids are the anchor contract between the TOC and the body. Slugs keep
+// CJK text, lower-case Latin, and give repeated headings a numeric suffix.
+expectContains('duplicate heading keeps the base id', html('# x\n\n# x'), 'id="md2pdf-h-x"')
+expectContains('duplicate heading gains a suffix', html('# x\n\n# x'), 'id="md2pdf-h-x-2"')
+expectContains('a third duplicate gains -3', html('# x\n\n# x\n\n# x'), 'id="md2pdf-h-x-3"')
+expectContains('heading slug lowercases latin', html('# Hello World'), 'id="md2pdf-h-hello-world"')
+expectContains('heading slug drops punctuation', html('# 1. 引言'), 'id="md2pdf-h-1-引言"')
+expectContains('heading slug uses the plain text', html('# **粗** 体'), 'id="md2pdf-h-粗-体"')
+expectContains('an empty slug has a fallback', html('# ---'), 'id="md2pdf-h-section"')
+expectContains('a raw heading id is replaced', html('<h2 id="old">x</h2>'), 'id="md2pdf-h-x"')
+expectMissing('a raw heading id does not survive', html('<h2 id="old">x</h2>'), 'id="old"')
+expectEqual('headings are reported in order', renderMarkdown('# A\n\n## B').headings.map(h => h.id).join(','),
+  'md2pdf-h-a,md2pdf-h-b')
+
+const tocDoc = await renderDocument({
+  markdown: '# 第一章\n\n## 第一节\n\n### 小节\n\n#### 四级\n\n正文。',
+  title: 'T',
+  toc: true,
+})
+expectContains('toc block', tocDoc.html, '<nav class="md2pdf-toc">')
+expectContains('toc links a level one heading', tocDoc.html, '<a href="#md2pdf-h-第一章">第一章</a>')
+expectContains('toc links a level two heading', tocDoc.html, '<a href="#md2pdf-h-第一节">第一节</a>')
+expectContains('toc links a level three heading', tocDoc.html, '<a href="#md2pdf-h-小节">小节</a>')
+expectMissing('toc excludes level four', tocDoc.html, 'href="#md2pdf-h-四级"')
+expectContains('toc has a title', tocDoc.html, 'md2pdf-toc-title')
+expectContains('toc title is Chinese by default', tocDoc.html, '目录')
+expectTrue('toc starts a new page', /\.md2pdf-toc\s*\{[^}]*break-before: page/.test(tocDoc.html))
+expectContains('the body follows the toc on a new page', tocDoc.html, '<div class="md2pdf-body">')
+expectMissing('toc has no page numbers', tocDoc.html, 'class="pageNumber"')
+expectTrue('toc precedes the body', tocDoc.html.indexOf('md2pdf-toc-title') < tocDoc.html.indexOf('<h1 id="md2pdf-h-第一章"'))
+const plainDoc = await renderDocument({ markdown: '# A', title: 'T' })
+expectMissing('no toc block by default', plainDoc.html, '<nav class="md2pdf-toc">')
+expectMissing('no body wrapper without a toc', plainDoc.html, '<div class="md2pdf-body">')
+const englishToc = await renderDocument({ markdown: '# A', title: 'T', toc: true, lang: 'en-US' })
+expectContains('toc title follows the language', englishToc.html, 'Contents')
+
+// An explicit page break is author-controlled and survives both generators.
+expectContains('explicit page break', html('a\n\n<!-- pagebreak -->\n\n<!-- pagebreak -->\n\nb'),
+  '<div class="md2pdf-pagebreak"></div>')
+expectContains('page break css', buildHtml({ title: 'T', body: '' }, DEFAULT_PAGE), '.md2pdf-pagebreak')
+const breakDoc = await renderDocument({ markdown: 'A\n\n<!-- pagebreak -->\n\nB', title: 'T' })
+expectContains('page break survives the printable shell', breakDoc.html, '<div class="md2pdf-pagebreak"></div>')
+
+// The paper template renders its fields on the first body page; there is no
+// separate cover. Fields are plain text and are escaped like any other input.
+const paperSource = {
+  title: '题名',
+  authors: '张三、李四',
+  affiliations: '某大学',
+  abstract: '摘要正文。',
+  keywords: '关键词一；关键词二',
+  date: '2026-11-15',
+}
+const paperDoc = await renderDocument({
+  markdown: '---\ntitle: 示例\n---\n\n# 一、引言\n\n正文。',
+  title: 'T',
+  theme: 'paper',
+  themeCss: themeCss('paper'),
+  paper: paperSource,
+})
+expectContains('paper block', paperDoc.html, '<section class="md2pdf-paper">')
+expectContains('paper title', paperDoc.html, 'md2pdf-paper-title">题名<')
+expectContains('paper authors', paperDoc.html, 'md2pdf-paper-authors">张三、李四<')
+expectContains('paper affiliations', paperDoc.html, 'md2pdf-paper-affiliations">某大学<')
+expectContains('paper abstract label', paperDoc.html, '摘要：')
+expectContains('paper keywords label', paperDoc.html, '关键词：')
+expectContains('paper date', paperDoc.html, '2026-11-15')
+expectContains('paper title is styled', themeCss('paper'), '.md2pdf-paper-title')
+expectTrue('paper block precedes the body',
+  paperDoc.html.indexOf('<section class="md2pdf-paper">') < paperDoc.html.indexOf('<h1 id="md2pdf-h-一-引言"'))
+expectTrue('paper block precedes the frontmatter table',
+  paperDoc.html.indexOf('<section class="md2pdf-paper">') < paperDoc.html.indexOf('<table class="frontmatter">'))
+expectMissing('paper keys stay out of the frontmatter table', paperDoc.html, 'pdf.paper.title')
+const larkPaper = await renderDocument({
+  markdown: '# A', title: 'T', theme: 'lark', paper: { title: '题名' },
+})
+expectMissing('paper fields need the paper preset', larkPaper.html, '<section class="md2pdf-paper">')
+const escapedPaper = await renderDocument({
+  markdown: '# A', title: 'T', theme: 'paper', paper: { title: '<b>x</b>', authors: 'a & b' },
+})
+expectContains('paper title is escaped', escapedPaper.html, '&lt;b&gt;x&lt;/b&gt;')
+expectContains('paper authors are escaped', escapedPaper.html, 'a &amp; b')
 
 process.stdout.write(`\n${checks - failures}/${checks} checks passed\n`)
 process.exit(failures === 0 ? 0 : 1)

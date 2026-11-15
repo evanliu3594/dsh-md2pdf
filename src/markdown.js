@@ -171,6 +171,106 @@ export function renderFrontmatter(source) {
   return `<table class="frontmatter"><tbody>${rows.join('')}</tbody></table>`
 }
 
+/** Named entities the renderer can emit, decoded before a heading becomes a slug. */
+const NAMED_ENTITIES = {
+  '&amp;': '&',
+  '&lt;': '<',
+  '&gt;': '>',
+  '&quot;': '"',
+  '&#39;': "'",
+  '&#x27;': "'",
+  '&nbsp;': ' ',
+}
+
+/**
+ * Read the visible text of one rendered inline fragment.
+ * @param html - rendered inline markup.
+ * @returns the text with tags removed and known entities decoded.
+ */
+function plainTextOf(html) {
+  return String(html)
+    .replace(/<sup class="footnote-ref"[\s\S]*?<\/sup>/gi, '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&(?:amp|lt|gt|quot|#39|#x27|nbsp);/g, entity => NAMED_ENTITIES[entity] ?? entity)
+}
+
+/**
+ * Build the anchor slug for one heading.
+ *
+ * Unicode letters and digits stay, so a Chinese heading keeps a readable
+ * anchor. Latin text is lower-cased, whitespace and punctuation collapse to a
+ * single hyphen, and a heading with no letters falls back to `section`.
+ * @param text - the heading's visible text.
+ * @returns the slug, never empty.
+ */
+function slugOf(text) {
+  const slug = String(text)
+    .normalize('NFKC')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\u00a0]+/g, '-')
+    .replace(/[^\p{Letter}\p{Number}_-]+/gu, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return slug === '' ? 'section' : slug
+}
+
+/** A rendered heading element, with its level, id, and visible text. */
+const HEADING_TAG = /<h([1-6])\b([^>]*)>([\s\S]*?)<\/h\1\s*>/gi
+
+/**
+ * Give every heading a stable id and report them in document order.
+ *
+ * The ids are the TOC's link targets and the PDF outline's anchors. An id the
+ * generator already wrote is replaced, so both generators share one scheme; a
+ * repeated slug gains `-2`, `-3` and so on until the id is unique.
+ * @param html - a rendered document body.
+ * @returns the body with ids, and the headings in order.
+ */
+export function addHeadingIds(html) {
+  const used = new Set()
+  const headings = []
+  const body = String(html ?? '').replace(HEADING_TAG, (_match, level, attributes, inner) => {
+    const label = plainTextOf(inner).trim()
+    const base = `md2pdf-h-${slugOf(label)}`
+    let id = base
+    let suffix = 1
+    while (used.has(id)) {
+      suffix += 1
+      id = `${base}-${suffix}`
+    }
+    used.add(id)
+    headings.push({ level: Number(level), id, label })
+    const rest = attributes.replace(/\s+id\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i, '')
+    return `<h${level} id="${id}"${rest}>${inner}</h${level}>`
+  })
+  return { html: body, headings }
+}
+
+/**
+ * Build the clickable table of contents.
+ *
+ * Only h1-h3 are listed; deeper headings still carry ids but stay out of the
+ * TOC. The list has no page numbers, because a second layout pass is what
+ * numbering needs and v2 does not do one. The title follows the document
+ * language.
+ * @param headings - headings reported by {@link addHeadingIds}.
+ * @param options - the document language.
+ * @returns the TOC block markup, empty without a listed heading.
+ */
+export function tocHtml(headings, options = {}) {
+  const items = Array.isArray(headings)
+    ? headings.filter(heading => heading.level >= 1 && heading.level <= 3)
+    : []
+  if (items.length === 0) return ''
+  const lang = typeof options.lang === 'string' && options.lang !== '' ? options.lang : 'zh-CN'
+  const title = lang.toLowerCase().startsWith('zh') ? '目录' : 'Contents'
+  const links = items.map(heading => `<li class="md2pdf-toc-level-${heading.level}">`
+    + `<a href="#${heading.id}">${escapeHtml(heading.label)}</a></li>`).join('\n')
+  return `<nav class="md2pdf-toc">\n<p class="md2pdf-toc-title">${escapeHtml(title)}</p>\n`
+    + `<ol>\n${links}\n</ol>\n</nav>`
+}
+
 /**
  * Lift `[^label]: body` definitions out of the block stream.
  * @param lines - document lines.
@@ -512,6 +612,13 @@ function renderBlocks(lines, ctx) {
     const afterTable = tableNotePending
     tableNotePending = false
 
+    // An explicit page break is the author's control over pagination.
+    if (/^[ \t]{0,3}<!--[ \t]*pagebreak[ \t]*-->[ \t]*$/i.test(line)) {
+      output.push('<div class="md2pdf-pagebreak"></div>')
+      index += 1
+      continue
+    }
+
     // Fenced code: backticks or tildes, at least three.
     const fence = /^([ \t]*)(`{3,}|~{3,})[ \t]*([^`]*)$/.exec(line)
     if (fence !== null) {
@@ -675,7 +782,8 @@ function renderBlocks(lines, ctx) {
  * Render a Markdown document body.
  * @param source - the file text.
  * @param [options] - `math` renders one TeX fragment to markup.
- * @returns the frontmatter block markup and the document body markup.
+ * @returns the frontmatter block markup, the body markup with heading ids, and
+ *   the headings in document order.
  */
 export function renderMarkdown(source, options = {}) {
   const text = String(source).replace(/\r\n?/g, '\n')
@@ -683,8 +791,10 @@ export function renderMarkdown(source, options = {}) {
   const { notes, kept } = extractFootnotes(body.split('\n'))
   const ctx = createContext({ math: options.math, notes })
   const markup = renderBlocks(kept, ctx)
+  const assembled = addHeadingIds(markup + footnoteSection(ctx))
   return {
     frontmatter: renderFrontmatter(frontmatter),
-    body: markup + footnoteSection(ctx),
+    body: assembled.html,
+    headings: assembled.headings,
   }
 }
