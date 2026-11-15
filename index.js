@@ -16,6 +16,7 @@
 import { isAbsolute } from 'node:path'
 
 import { documentDefaults } from './src/document-config.js'
+import { writeTestPrintSource } from './src/test-print.js'
 import {
   describeCapability, exportMarkdownToPdf, exportTool, failPrintJob, finishExport, MARKDOWN_EXTENSIONS,
   openFinishedExport, prepareExport, resolvePrintJobs,
@@ -28,6 +29,7 @@ import {
   readPreset, runPresetAction,
 } from './src/presets.js'
 import { buildPreviews } from './src/previews.js'
+import { settingsDirectory } from './src/settings.js'
 import { THEMES } from './src/themes.js'
 
 /** Route serving one export request. */
@@ -38,6 +40,9 @@ export const PREPARE_PATH = '/md2pdf/prepare'
 
 /** Route accepting the PDF bytes a DSH client printed. */
 export const FINISH_PATH = '/md2pdf/finish'
+
+/** Route preparing the built-in test page. */
+export const TEST_PRINT_PATH = '/md2pdf/test-print'
 
 /** Route reporting a client-side print failure for one claimed job. */
 export const FAIL_JOB_PATH = '/md2pdf/print-jobs/fail'
@@ -202,6 +207,9 @@ function parseExportBody(text) {
   if (typeof body.engine === 'string') request.engine = body.engine
   if (typeof body.browserPath === 'string' && body.browserPath !== '') request.browserPath = body.browserPath
   if (typeof body.page === 'object' && body.page !== null) request.page = body.page
+  if (typeof body.documentConfig === 'object' && body.documentConfig !== null) {
+    request.documentConfig = body.documentConfig
+  }
   return request
 }
 
@@ -431,6 +439,7 @@ export function apply(ctx, config) {
           css: current.css,
           cssPath: presetCssPath(selected),
           presetsPath: presetsDirectory(),
+          homePath: settingsDirectory(),
           maxBytes: MAX_PRESET_CSS_BYTES,
           fonts: fontsInCss(current.css).map(family => ({
             family,
@@ -569,6 +578,71 @@ export function apply(ctx, config) {
       }
     },
   }), `md2pdf: POST ${PREPARE_PATH}`)
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: TEST_PRINT_PATH,
+    handler: async (req, res) => {
+      if (refused(ctx, req, res)) return
+      if (req.method !== 'POST') {
+        res.statusCode = 405
+        res.setHeader('allow', 'POST')
+        res.end()
+        return
+      }
+      // The body is optional: the test page is fixed, and a one-off page or
+      // document override is the only thing a caller may add.
+      let page
+      let documentConfig
+      const essence = String(req.headers['content-type']).split(';', 1)[0]?.trim().toLowerCase()
+      if (essence === 'application/json') {
+        let text
+        try {
+          text = await readBoundedBody(req)
+        } catch {
+          sendJson(res, 400, { ok: false, code: 'bad-request', message: 'request body unreadable' })
+          return
+        }
+        if (text === null) {
+          sendJson(res, 413, { ok: false, code: 'payload-too-large', message: 'request body is too large' })
+          return
+        }
+        let body
+        try {
+          body = JSON.parse(text)
+        } catch {
+          sendJson(res, 400, { ok: false, code: 'bad-request', message: 'body must be JSON' })
+          return
+        }
+        if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+          sendJson(res, 400, { ok: false, code: 'bad-request', message: 'body must be a JSON object' })
+          return
+        }
+        if (body.page !== undefined && (typeof body.page !== 'object' || body.page === null || Array.isArray(body.page))) {
+          sendJson(res, 400, { ok: false, code: 'bad-request', message: 'page must be an object' })
+          return
+        }
+        if (body.documentConfig !== undefined
+          && (typeof body.documentConfig !== 'object' || body.documentConfig === null || Array.isArray(body.documentConfig))) {
+          sendJson(res, 400, { ok: false, code: 'bad-request', message: 'documentConfig must be an object' })
+          return
+        }
+        page = body.page
+        documentConfig = body.documentConfig
+      } else if (req.headers['content-length'] !== undefined && Number(req.headers['content-length']) !== 0) {
+        sendJson(res, 415, { ok: false, code: 'unsupported-media-type', message: 'content-type must be application/json' })
+        return
+      }
+      try {
+        const sourcePath = await writeTestPrintSource()
+        const prepared = await prepareExport({ path: sourcePath, page, documentConfig }, options)
+        sendJson(res, 200, { ok: true, sourcePath, ...prepared })
+      } catch (error) {
+        const failure = failureResponse(error)
+        sendJson(res, failure.status, { ok: false, ...failure })
+      }
+    },
+  }), `md2pdf: POST ${TEST_PRINT_PATH}`)
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',

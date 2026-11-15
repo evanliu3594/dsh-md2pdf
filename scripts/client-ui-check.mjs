@@ -1,0 +1,169 @@
+/**
+ * Source contracts for the settings page and the one-off document overrides.
+ *
+ * The client is a classic script mounted by the browser module loader, so its
+ * React components cannot be imported by a Node check. These assertions pin the
+ * wiring that must survive a refactor: the controls exist, both dictionaries
+ * carry the text, the overrides reach both export engines, the test print uses
+ * the Host-owned sample, and the diagnostics payload holds no document content.
+ *
+ * Run: node scripts/client-ui-check.mjs
+ */
+import { readFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+let failures = 0
+let checks = 0
+
+/**
+ * Assert a condition holds.
+ * @param label - what the check proves.
+ * @param condition - required truth.
+ */
+function expectTrue(label, condition) {
+  checks += 1
+  if (condition === true) return
+  failures += 1
+  process.stdout.write('FAIL ' + label + '\n')
+}
+
+/**
+ * Assert one string occurs at least a number of times.
+ * @param label - what the check proves.
+ * @param text - source text.
+ * @param needle - substring to count.
+ * @param minimum - required occurrences.
+ */
+function expectCount(label, text, needle, minimum) {
+  const count = text.split(needle).length - 1
+  expectTrue(label + ' (' + count + ' occurrences)', count >= minimum)
+}
+
+const here = dirname(fileURLToPath(import.meta.url))
+const client = await readFile(join(here, '..', 'client.js'), 'utf8')
+const manifest = JSON.parse(await readFile(join(here, '..', 'package.json'), 'utf8'))
+
+// Both dictionaries carry every new control label.
+const bilingual = [
+  'settings.engineRefresh',
+  'settings.testPrint',
+  'settings.testPrinting',
+  'settings.testPrintDone',
+  'settings.testPrintFailed',
+  'settings.docHeading',
+  'settings.docHint',
+  'settings.docPageHint',
+  'settings.docHeader',
+  'settings.docFooter',
+  'settings.docPageNumbers',
+  'settings.docToc',
+  'settings.docDefault',
+  'settings.docOn',
+  'settings.docOff',
+  'settings.docSave',
+  'settings.docReset',
+  'settings.docSaved',
+  'settings.docCleared',
+  'settings.docInvalid',
+  'settings.docActive',
+  'settings.diagnostics',
+  'settings.diagnosticsHint',
+  'settings.diagnosticsCopy',
+  'settings.diagnosticsCopied',
+  'settings.diagnosticsCopyFailed',
+  'settings.lastError',
+  'settings.lastErrorNone',
+  'settings.homePath',
+  'settings.testPath',
+]
+for (const key of bilingual) {
+  expectCount('both dictionaries define ' + key, client, "'" + key + "'", 2)
+}
+
+// The settings controls are addressable and wired to their handlers.
+for (const action of [
+  'refresh-engine',
+  'test-print',
+  'save-document',
+  'reset-document',
+  'copy-diagnostics',
+]) {
+  expectTrue('the settings action ' + action + ' exists',
+    client.includes("'data-md2pdf-action': '" + action + "'"))
+}
+for (const marker of [
+  'engine',
+  'test-status',
+  'doc-form',
+  'doc-active',
+  'last-error',
+  'diagnostics',
+]) {
+  expectTrue('the settings marker ' + marker + ' exists',
+    client.includes("'data-md2pdf': '" + marker + "'"))
+}
+
+// The document form covers every one-off field.
+for (const field of [
+  'doc-size',
+  'doc-orientation',
+  'doc-margin',
+  'doc-font',
+  'doc-header',
+  'doc-footer',
+  'doc-page-numbers',
+  'doc-toc',
+]) {
+  expectTrue('the document form field ' + field + ' exists',
+    client.includes("'data-md2pdf': '" + field + "'"))
+}
+
+// One-off overrides reach both export engines and no tool path.
+expectCount('the browser export applies the overrides', client, 'documentOverrides.page', 2)
+expectTrue('the DSH export applies the document overrides',
+  client.includes('documentOverrides.documentConfig'))
+expectTrue('the overrides are window state, not storage',
+  client.includes('let documentOverrides = {}'))
+expectTrue('an active override is reported',
+  client.includes('documentOverridesActive'))
+expectTrue('the override form validates page ranges',
+  client.includes('documentDraftInvalid'))
+expectTrue('the override form builds only explicit fields',
+  client.includes('documentOverridesOf'))
+expectTrue('the override never writes the source file',
+  !client.includes("'md2pdf/export' {") && !client.includes('writeFile'))
+
+// The test print is a Host-owned sample, printed through the same guest.
+expectTrue('the test print calls the Host route',
+  client.includes('TEST_PRINT_ROUTE'))
+expectTrue('the test print uses the normal guest print',
+  client.includes('runPrintJob({'))
+expectTrue('the test print can fall back to the browser',
+  client.includes('exportPdf({ path: payload.sourcePath })'))
+expectTrue('the unused prepared test job is failed before the fallback',
+  client.includes("reason: 'client-required'"))
+
+// Diagnostics carry configuration facts, never document content.
+const start = client.indexOf('const diagnostics = {')
+const end = start < 0 ? -1 : client.indexOf('\n          }', start)
+const diagnosticsSource = start < 0 || end < 0 ? '' : client.slice(start, end)
+expectTrue('the diagnostics block exists', diagnosticsSource !== '')
+for (const key of ['engine', 'printEngine', 'afterExport', 'fonts', 'lastError', 'homePath', 'documentOverrides']) {
+  expectTrue('diagnostics include ' + key, diagnosticsSource.includes(key + ':'))
+}
+for (const forbidden of ['markdown', 'sourcePath', 'html', 'pdfBytes']) {
+  expectTrue('diagnostics exclude ' + forbidden, !diagnosticsSource.includes(forbidden))
+}
+expectTrue('diagnostics can be copied', client.includes('navigator.clipboard.writeText'))
+expectTrue('the diagnostics block is styled', client.includes('.md2pdf-diagnostics'))
+
+// The client stays a classic script with no Node or DSH package imports.
+expectTrue('the client imports no Node module', !client.includes("require('node:"))
+expectTrue('the client imports no DSH client package', !client.includes("require('@deepseek-ai/"))
+
+expectTrue('the test chain runs this check',
+  String(manifest.scripts.test).includes('scripts/client-ui-check.mjs'))
+
+process.stdout.write('\n' + (checks - failures) + '/' + checks + ' checks passed\n')
+process.exit(failures === 0 ? 0 : 1)

@@ -120,7 +120,7 @@ const { CLIENT_FAILURE_REASONS, createPrintJobs } = await import('../src/print-j
 const indexModule = await import('../index.js')
 
 const {
-  FAIL_JOB_PATH, NEXT_JOB_PATH, brokerWaitSeconds,
+  FAIL_JOB_PATH, NEXT_JOB_PATH, SETTINGS_PATH, TEST_PRINT_PATH, brokerWaitSeconds,
 } = indexModule
 
 /**
@@ -1117,6 +1117,70 @@ try {
   expectEqual('a sweep during the write does not expire the job', leaseResult.ok, true)
   expectEqual('the committed bytes reach the target', (await readFile(leaseTarget)).equals(PDF), true)
   expectEqual('the leased job ends finished', commitShop.get(leasePrepared.finishToken).state, 'finished')
+
+  // 6c. The built-in test page: one route writes it under MD2PDF_HOME, renders
+  // it, and lets the normal finish path write the PDF beside it. The client
+  // then prints it through the same guest as a real export.
+  const testPrintJobs = createPrintJobs({ timeoutMs: 60_000 })
+  const testPrintRoutes = mountRoutes({ jobs: testPrintJobs })
+  const testPrint = await callRoute(testPrintRoutes, TEST_PRINT_PATH,
+    fakeRequest('POST', TEST_PRINT_PATH, '{}', { 'content-type': 'application/json' }))
+  expectEqual('the test print route prepares a job', testPrint.status, 200)
+  expectEqual('the test print route returns its source',
+    testPrint.payload?.sourcePath, join(home, 'test-print', 'test-print.md'))
+  expectTrue('the test print source exists',
+    (await readdir(join(home, 'test-print'))).includes('test-print.md'))
+  expectEqual('the test print page carries page numbers',
+    testPrint.payload?.printOptions.displayHeaderFooter, true)
+  expectTrue('the test print page carries the default footer',
+    String(testPrint.payload?.printOptions.footerTemplate).includes('pageNumber'))
+  const testPage = await fetch(testPrint.payload.printUrl)
+  expectEqual('the test page is served', testPage.status, 200)
+  const testHtml = await testPage.text()
+  expectTrue('the test page carries the built-in sample', testHtml.includes('dsh-md2pdf 打印测试'))
+  expectTrue('the test page carries a heading id',
+    testHtml.includes('id="md2pdf-h-dsh-md2pdf-打印测试"'))
+  const testResult = await finishExport(
+    { finishToken: testPrint.payload.finishToken, pdfBytes: PDF },
+    { jobs: testPrintJobs },
+  )
+  expectEqual('the test print writes beside its sample',
+    testResult.pdfPath, join(home, 'test-print', 'test-print.pdf'))
+  expectTrue('the test pdf exists',
+    (await readdir(join(home, 'test-print'))).includes('test-print.pdf'))
+
+  const testGet = await callRoute(testPrintRoutes, TEST_PRINT_PATH,
+    fakeRequest('GET', TEST_PRINT_PATH))
+  expectEqual('the test print route is POST only', testGet.status, 405)
+  const testFenceRoutes = mountRoutes({ jobs: createPrintJobs() }, 403)
+  const testFence = await callRoute(testFenceRoutes, TEST_PRINT_PATH,
+    fakeRequest('POST', TEST_PRINT_PATH, '{}', { 'content-type': 'application/json' }))
+  expectEqual('the test print route checks the fence first', testFence.status, 403)
+  const testBadBody = await callRoute(testPrintRoutes, TEST_PRINT_PATH,
+    fakeRequest('POST', TEST_PRINT_PATH, 'not json', { 'content-type': 'application/json' }))
+  expectEqual('the test print route refuses an unparsable body', testBadBody.status, 400)
+  const testBadPage = await callRoute(testPrintRoutes, TEST_PRINT_PATH,
+    fakeRequest('POST', TEST_PRINT_PATH, '{"page":"A4"}', { 'content-type': 'application/json' }))
+  expectEqual('the test print route refuses a non-object page', testBadPage.status, 400)
+
+  const testOverride = await callRoute(testPrintRoutes, TEST_PRINT_PATH,
+    fakeRequest('POST', TEST_PRINT_PATH,
+      JSON.stringify({ page: { marginMm: 20 }, documentConfig: { header: '测试页眉' } }),
+      { 'content-type': 'application/json' }))
+  expectTrue('a test print header override reaches the template',
+    String(testOverride.payload?.printOptions.headerTemplate).includes('测试页眉'))
+  expectEqual('a test print page override reaches the margins',
+    testOverride.payload?.printOptions.margins.top, 0.7874)
+  await finishExport(
+    { finishToken: testOverride.payload.finishToken, pdfBytes: PDF },
+    { jobs: testPrintJobs },
+  )
+
+  const settingsRoutes = mountRoutes({ jobs: createPrintJobs() })
+  const settingsAnswer = await callRoute(settingsRoutes, SETTINGS_PATH,
+    fakeRequest('GET', SETTINGS_PATH))
+  expectEqual('the settings route reports the plugin home',
+    settingsAnswer.payload?.homePath, home)
 
   // 7. The client wiring. The client is a classic script; the checks pin the
   // source contract and leave the real DSH window to the manual run.

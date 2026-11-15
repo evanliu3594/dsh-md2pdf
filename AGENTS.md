@@ -20,8 +20,9 @@
 | 索引是权威，写入先 CSS 后索引 | 中断最多留下没人引用的文件，不会出现条目指向空样式 |
 | Host 管权限与副作用，Client 只管界面 | 信任检查、文件写入、进程启动都集中在 Host |
 | 自带 Markdown 渲染器 | 不要求用户装 pandoc，所有机器产出相同 |
-| 打印器两级发现 | Electron 优先省一个进程，浏览器兜底覆盖桌面版拿不到 Electron 的情况 |
-| 打印后轮询落盘 | 打印进程退出早于文件写完，直接读会拿到半个或旧的 PDF |
+| DSH 客户端打印 | 客户端用 DSH 自带 Chromium 的 `<webview>.printToPDF`；浏览器只做回退 |
+| 写锁保护落盘 | finish 先取得写锁再写盘，超时清扫与外部 fail 不得打断已开始的提交 |
+| 打印后轮询落盘 | 浏览器回退的打印进程退出早于文件写完，直接读会拿到半个或旧的 PDF |
 | 每条路由先过信任栅栏 | 只有本机页面能触发打印、改预设、开文件 |
 | 打开文件只认预设标识 | 路径由 Host 从标识拼出并校验，客户端传不进任意路径 |
 | 预设 CSS 当数据插入并转义 `</style` | 用户样式不能跳出样式块 |
@@ -32,15 +33,18 @@
 
 ```
 文件树右键 / 标签工具栏 / 路径右键 / md2pdf_export
-  → POST /md2pdf/export { path }
-  → 栅栏校验 → 路径规范化 → 后缀校验 → 读源文件
-  → listPresets() → readPreset(selected) → 该预设的 CSS
+  → POST /md2pdf/prepare { path, preset?, page?, documentConfig? }
+  → 栅栏校验 → inspectSource() → 读源文件 → 合并 pdf.* 配置
   → renderDocument()：markdown.js → html-build.js → document.js
-  → 写 HTML 到打印用临时目录
-  → printPdf()：Electron 或 Chromium 无头打印
-  → awaitPdf()：等文件大小/时间戳变化且出现 %%EOF
+  → 启动一次性 loopback 资源服务 → 创建打印任务（ready=false → markReady）
+  → 客户端长轮询或 UI 直接认领 → <webview>.printToPDF(printOptions)
+  → POST /md2pdf/finish（字节 + finishToken）
+  → 取写锁 → 校验 %PDF-/%%EOF → 写 .md2pdf-<jobId>.pdf.tmp → fsync → 改名
   → <源目录>/<源文件名>.pdf
-  → 返回 { pdfPath, bytes, generator, math, theme, engine, printer, durationMs }
+  → 返回 { pdfPath, bytes, engine, previewAddress, warnings, ... }
+
+浏览器回退：POST /md2pdf/export 渲染后由 Chromium 打印到临时文件，
+走同一套校验与改名；只有它能用 file: 资源。
 ```
 
 ### 预设
@@ -68,26 +72,34 @@
 | 客户端 | React（由浏览器模块表提供），DSH 的 slots、contextMenus、locale 服务 | 不打包 React |
 | Markdown | 自带渲染器 `src/markdown.js` | CommonMark 核心 + GFM 表格、任务列表、删除线、自动链接 + 脚注 + TeX |
 | 公式 | `temml` ^0.14 转 MathML | 唯一运行时依赖 |
-| 打印 | Electron `printToPDF`，或 Chromium `--print-to-pdf` | pandoc 仅作可选渲染器 |
-| 测试 | 纯 Node 脚本，不引测试框架 | `scripts/*.mjs`，共 147 条断言 + 46 个列表用例 |
+| 打印 | DSH 客户端 `<webview>.printToPDF`；Chromium `--print-to-pdf` 回退 | pandoc 仅作可选渲染器 |
+| 测试 | 纯 Node 脚本，不引测试框架 | `scripts/*.mjs`，13 套断言 + 46 个列表用例 |
 | 文档 | Markdown + PNG | 图片由真实渲染管线生成 |
 
 ## 模块职责
 
 ```
-index.js          Host 入口：五条路由、md2pdf_export 工具、失败码映射
-client.js         Client 入口：菜单项、工具栏控件、设置页、对话框、文案
-src/markdown.js   内置渲染器
+index.js          Host 入口：路由、md2pdf_export 工具、失败码映射
+client.js         Client 入口：菜单项、工具栏、PrintHost、broker 轮询、设置页、文档覆盖
+src/markdown.js   内置渲染器；标题 id、目录、显式分页
 src/math.js       temml 懒加载与降级
 src/themes.js     三个内置预设的 CSS 文本与名称
 src/presets.js    预设库：播种、迁移、增删改排、动作分发
 src/opener.js     用系统默认程序打开文件
 src/previews.js   每预设一份预览文档，边距回读
 src/settings.js   用户目录解析与样式上限
-src/document.js   纸质 HTML 外壳与结构样式表
+src/document.js   纸质 HTML 外壳与结构样式表；目录、分页、论文块样式
+src/document-config.js 解析 pdf.*；合并行配置、预设页、front matter、请求
+src/page-css.js   页面覆盖层与 @page 边距解析
+src/print-options.js 打印参数：页眉页脚模板、居中页码、大纲开关、边距
+src/print-jobs.js 打印任务状态机（含 finishing 写锁）、令牌、在场判断
+src/print-server.js 一次性 loopback 资源服务
+src/test-print.js 内置测试页（写入 MD2PDF_HOME/test-print）
+src/asset-scan.js 本地资源引用扫描与警告
+src/font-css.js   字体族与 @font-face 解析
 src/html-build.js 正文生成与文档组装
-src/export.js     导出编排与能力上报
-src/pdf.js        打印器发现、无头打印、落盘等待
+src/export.js     导出编排：prepare/finish、浏览器回退、agent broker
+src/pdf.js        浏览器回退打印、awaitPdf、PDF 校验
 src/proc.js       PATH 查找与子进程执行
 ```
 
@@ -104,19 +116,25 @@ src/proc.js       PATH 查找与子进程执行
 7. 版本号保持在 `0.1.0`，发布时才变。
 8. 运行时依赖只有 `temml`。
 9. 预设 CSS 以文本插入，`</style` 必须转义。
+10. `finish` 先调 `beginFinish()` 取写锁。写锁期间外部 `fail` 被拒绝，超时清扫跳过；写盘失败只能由写入方 `abandonFinish()` 结束任务。
+11. 打印参数只由 Host 生成。`displayHeaderFooter` 为真时，未配置的一侧必须传非空不可见模板（`<span></span>`）。
+12. 页码居中且作用于所有页；v2 不设封面、完整红头模板或水印。
 
 ## 命令与验证
 
 ```powershell
-npm test                  # 四套断言，应为 82 / 37 / 23 / 5
+npm test                  # 13 套断言，全部通过才算过
 node scripts/list-audit.mjs
 node scripts/export-cli.mjs samples/sample.md --html out.html
 node scripts/pdf-info.mjs samples/sample.pdf
 ```
 
-`npm test` 是闸门，必须打印 `82/82`、`37/37`、`23/23`、`5/5`。`list-audit` 必须打印 `failures: builtin=0 markdown(old)=0 gfm+math=0`。
+当前计数（2026-11-15）：render 146、document config 75、print options 121、presets 75、
+previews 23、dsh preview 70、printer 5、print server 42、print jobs 80、export 133、
+after export 95、broker 266、client UI 77。计数会随功能增长；闸门是「全部通过」。
+`list-audit` 必须打印 `failures: builtin=0 markdown(old)=0 gfm+math=0`。
 
-两条环境事实：`src/` 或 `index.js` 的改动要重启 DSH 才加载；只改客户端刷新页面即可。打印会启动 Chromium 系浏览器。
+三条环境事实：`src/` 或 `index.js` 的改动要重启 DSH 才加载；只改 `client.js` 刷新页面即可。打印优先走 DSH 客户端；没有客户端时启动 Chromium 浏览器。测试打印写在 `MD2PDF_HOME/test-print`。
 
 ## 约定
 

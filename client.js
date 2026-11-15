@@ -28,6 +28,7 @@ window.__ModuleLoader__.load({
     const PREVIEWS_ROUTE = 'md2pdf/previews'
     const NEXT_JOB_ROUTE = 'md2pdf/print-jobs/next'
     const FAIL_JOB_ROUTE = 'md2pdf/print-jobs/fail'
+    const TEST_PRINT_ROUTE = 'md2pdf/test-print'
 
     /** The print guest must attach and become ready before this deadline. */
     const PRINT_ATTACH_TIMEOUT_MS = 20000
@@ -124,6 +125,38 @@ window.__ModuleLoader__.load({
         'settings.engineDsh': 'DSH built-in',
         'settings.engineBrowser': '{name} (browser fallback)',
         'settings.engineNone': 'none',
+        'settings.engineRefresh': 'Refresh',
+        'settings.testPrint': 'Test print',
+        'settings.testPrinting': 'Printing the test page…',
+        'settings.testPrintDone': 'Test PDF written to {path} (engine: {engine})',
+        'settings.testPrintFailed': 'Test print failed: {message}',
+        'settings.docHeading': 'Document overrides',
+        'settings.docHint': 'Apply one-off page and document settings to this window\'s exports. The source file and the preset stay unchanged.',
+        'settings.docPageHint': 'Only a set field overrides; an empty field keeps the file or preset value.',
+        'settings.docHeader': 'Header',
+        'settings.docFooter': 'Footer',
+        'settings.docPageNumbers': 'Page numbers',
+        'settings.docToc': 'Table of contents',
+        'settings.docDefault': 'File or preset',
+        'settings.docOn': 'On',
+        'settings.docOff': 'Off',
+        'settings.docHeaderPlaceholder': 'Header text',
+        'settings.docFooterPlaceholder': '页脚文字',
+        'settings.docSave': 'Apply to this window',
+        'settings.docReset': 'Clear overrides',
+        'settings.docSaved': 'Document overrides apply to this window\'s exports.',
+        'settings.docCleared': 'Document overrides cleared.',
+        'settings.docInvalid': 'Page values are out of range.',
+        'settings.docActive': 'Overrides active',
+        'settings.diagnostics': 'Diagnostics',
+        'settings.diagnosticsHint': 'Engine, fonts, last error, and the plugin folder. No document content is included.',
+        'settings.diagnosticsCopy': 'Copy JSON',
+        'settings.diagnosticsCopied': 'Diagnostics copied.',
+        'settings.diagnosticsCopyFailed': 'Could not copy: {message}',
+        'settings.lastError': 'Last error: {message}',
+        'settings.lastErrorNone': 'none',
+        'settings.homePath': 'Plugin folder: {path}',
+        'settings.testPath': 'Test page folder: {path}',
         'settings.pageHeading': 'Page',
         'settings.pageHint': 'The page box for the preset in use. Only fields you change are stored; an empty field keeps the preset stylesheet in charge.',
         'settings.pageSize': 'Paper size',
@@ -225,6 +258,38 @@ window.__ModuleLoader__.load({
         'settings.engineDsh': 'DSH 内置',
         'settings.engineBrowser': '{name}（浏览器回退）',
         'settings.engineNone': '无',
+        'settings.engineRefresh': '刷新',
+        'settings.testPrint': '测试打印',
+        'settings.testPrinting': '正在打印测试页…',
+        'settings.testPrintDone': '测试 PDF 已写到 {path}（引擎：{engine}）',
+        'settings.testPrintFailed': '测试打印失败：{message}',
+        'settings.docHeading': '文档覆盖',
+        'settings.docHint': '给本窗口的导出加一次性的页面与文档设置。源文件与预设保持不变。',
+        'settings.docPageHint': '只有填写的字段覆盖；留空的字段沿用文件或预设。',
+        'settings.docHeader': '页眉',
+        'settings.docFooter': '页脚',
+        'settings.docPageNumbers': '页码',
+        'settings.docToc': '目录',
+        'settings.docDefault': '文件或预设',
+        'settings.docOn': '开',
+        'settings.docOff': '关',
+        'settings.docHeaderPlaceholder': '页眉文字',
+        'settings.docFooterPlaceholder': '页脚文字',
+        'settings.docSave': '应用到本窗口',
+        'settings.docReset': '清除覆盖',
+        'settings.docSaved': '文档覆盖已应用到本窗口的导出。',
+        'settings.docCleared': '文档覆盖已清除。',
+        'settings.docInvalid': '页面数值超出范围。',
+        'settings.docActive': '覆盖生效中',
+        'settings.diagnostics': '诊断',
+        'settings.diagnosticsHint': '引擎、字体、最近错误与插件目录；不包含文档内容。',
+        'settings.diagnosticsCopy': '复制 JSON',
+        'settings.diagnosticsCopied': '诊断信息已复制。',
+        'settings.diagnosticsCopyFailed': '复制失败：{message}',
+        'settings.lastError': '最近错误：{message}',
+        'settings.lastErrorNone': '无',
+        'settings.homePath': '插件目录：{path}',
+        'settings.testPath': '测试页目录：{path}',
         'settings.pageHeading': '页面',
         'settings.pageHint': '当前预设的页面设置。只保存你改动过的字段；留空的字段由预设样式决定。',
         'settings.pageSize': '纸张',
@@ -1096,6 +1161,95 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * One-off document overrides for this window's exports.
+     *
+     * The settings page writes them; nothing is stored on disk and the source
+     * file is never changed. Tool calls do not read them: they belong to the
+     * window where the user set them.
+     */
+    let documentOverrides = {}
+
+    /** @returns whether any override is set for this window. */
+    function documentOverridesActive() {
+      return documentOverrides.page !== undefined || documentOverrides.documentConfig !== undefined
+    }
+
+    /** @returns a draft with every override field unset. */
+    function emptyDocumentDraft() {
+      return {
+        size: '',
+        landscape: '',
+        marginMm: '',
+        fontSize: '',
+        header: '',
+        footer: '',
+        pageNumbers: '',
+        toc: '',
+      }
+    }
+
+    /**
+     * Turn stored overrides back into the settings form.
+     * @param overrides - the window's current overrides.
+     * @returns every form field as a string.
+     */
+    function documentDraftOf(overrides = {}) {
+      const page = overrides.page ?? {}
+      const documentConfig = overrides.documentConfig ?? {}
+      const choice = (value) => (value === true ? 'true' : value === false ? 'false' : '')
+      return {
+        size: typeof page.size === 'string' ? page.size : '',
+        landscape: page.landscape === true ? 'landscape' : page.landscape === false ? 'portrait' : '',
+        marginMm: typeof page.marginMm === 'number' ? String(page.marginMm) : '',
+        fontSize: typeof page.fontSize === 'number' ? String(page.fontSize) : '',
+        header: typeof documentConfig.header === 'string' ? documentConfig.header : '',
+        footer: typeof documentConfig.footer === 'string' ? documentConfig.footer : '',
+        pageNumbers: choice(documentConfig.pageNumbers),
+        toc: choice(documentConfig.toc),
+      }
+    }
+
+    /**
+     * Build the override object from the settings form.
+     * @param draft - form values as strings; an empty value means "unset".
+     * @returns page and document overrides with only explicit fields.
+     */
+    function documentOverridesOf(draft) {
+      const page = {}
+      if (draft.size !== '') page.size = draft.size
+      if (draft.landscape !== '') page.landscape = draft.landscape === 'landscape'
+      if (draft.marginMm !== '') page.marginMm = Number(draft.marginMm)
+      if (draft.fontSize !== '') page.fontSize = Number(draft.fontSize)
+      const documentConfig = {}
+      if (draft.header.trim() !== '') documentConfig.header = draft.header.trim()
+      if (draft.footer.trim() !== '') documentConfig.footer = draft.footer.trim()
+      if (draft.pageNumbers !== '') documentConfig.pageNumbers = draft.pageNumbers === 'true'
+      if (draft.toc !== '') documentConfig.toc = draft.toc === 'true'
+      const overrides = {}
+      if (Object.keys(page).length > 0) overrides.page = page
+      if (Object.keys(documentConfig).length > 0) overrides.documentConfig = documentConfig
+      return overrides
+    }
+
+    /**
+     * Validate the page fields of a document draft.
+     * @param draft - form values as strings.
+     * @returns true when a set field is out of range.
+     */
+    function documentDraftInvalid(draft) {
+      if (draft.marginMm !== '') {
+        const margin = Number(draft.marginMm)
+        if (!Number.isFinite(margin) || margin < PAGE_MARGIN_RANGE.min || margin > PAGE_MARGIN_RANGE.max) return true
+      }
+      if (draft.fontSize !== '') {
+        const fontSize = Number(draft.fontSize)
+        if (!Number.isFinite(fontSize) || fontSize < PAGE_FONT_RANGE.min || fontSize > PAGE_FONT_RANGE.max) return true
+      }
+      if (draft.size !== '' && !PAGE_SIZES.includes(draft.size)) return true
+      return false
+    }
+
+    /**
      * Run one export through the Host's browser fallback.
      * @param input - source path and the Session that reported it.
      * @returns the Host's answer, or a named failure.
@@ -1103,7 +1257,10 @@ window.__ModuleLoader__.load({
     async function exportPdf(input) {
       const body = { path: input.path }
       if (typeof input.sessionId === 'string' && input.sessionId !== '') body.sessionId = input.sessionId
-      if (input.page !== undefined) body.page = input.page
+      const page = input.page ?? documentOverrides.page
+      const documentConfig = input.documentConfig ?? documentOverrides.documentConfig
+      if (page !== undefined) body.page = page
+      if (documentConfig !== undefined) body.documentConfig = documentConfig
       const { response, payload } = await requestRoute(EXPORT_ROUTE, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -1405,6 +1562,20 @@ window.__ModuleLoader__.load({
 .md2pdf-status[data-kind="ok"] { color: var(--dsw-alias-state-success-primary, #2f8f5b); }
 .md2pdf-status[data-kind="error"] { color: var(--dsw-alias-state-error-primary, #c0392b); }
 .md2pdf-path { margin: 0; font-family: ui-monospace, SFMono-Regular, Consolas, Menlo, monospace; font-size: 11px; color: var(--dsw-alias-label-secondary, #6b7280); word-break: break-all; }
+.md2pdf-diagnostics {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: 10px;
+  border: 1px solid var(--dsw-alias-border-l2, #dfe4ea);
+  background: var(--dsw-alias-bg-layer-1, #fff);
+  font-family: ui-monospace, SFMono-Regular, Consolas, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
 `
 
     /** One style element; duplicate instances are harmless. */
@@ -1730,8 +1901,10 @@ window.__ModuleLoader__.load({
           const body = { path: input.path }
           if (typeof input.sessionId === 'string' && input.sessionId !== '') body.sessionId = input.sessionId
           if (typeof input.preset === 'string' && input.preset !== '') body.preset = input.preset
-          if (input.page !== undefined) body.page = input.page
-          if (input.documentConfig !== undefined) body.documentConfig = input.documentConfig
+          const page = input.page ?? documentOverrides.page
+          const documentConfig = input.documentConfig ?? documentOverrides.documentConfig
+          if (page !== undefined) body.page = page
+          if (documentConfig !== undefined) body.documentConfig = documentConfig
           let answer
           try {
             answer = await requestRoute(PREPARE_ROUTE, {
@@ -2003,6 +2176,12 @@ window.__ModuleLoader__.load({
           }))
           const [pageBusy, setPageBusy] = React.useState(false)
           const [fonts, setFonts] = React.useState([])
+          const [engineBusy, setEngineBusy] = React.useState(false)
+          const [testBusy, setTestBusy] = React.useState(false)
+          const [testStatus, setTestStatus] = React.useState(null)
+          const [docDraft, setDocDraft] = React.useState(() => documentDraftOf(documentOverrides))
+          const [docActive, setDocActive] = React.useState(documentOverridesActive)
+          const [lastError, setLastError] = React.useState('')
 
           const nameOf = React.useCallback((id) => {
             const found = presets.find(preset => preset.id === id)
@@ -2024,6 +2203,7 @@ window.__ModuleLoader__.load({
             setMeta({
               cssPath: typeof payload.cssPath === 'string' ? payload.cssPath : '',
               presetsPath: typeof payload.presetsPath === 'string' ? payload.presetsPath : '',
+              homePath: typeof payload.homePath === 'string' ? payload.homePath : '',
               maxBytes: typeof payload.maxBytes === 'number' ? payload.maxBytes : 0,
             })
             return payload
@@ -2073,6 +2253,7 @@ window.__ModuleLoader__.load({
               }
             }
             setPhase('error')
+            setLastError(messageOf(lastError))
             setStatus({ kind: 'error', text: t('settings.loadFailed', { message: messageOf(lastError) }) })
           }, [refresh, applyPageState])
 
@@ -2108,6 +2289,119 @@ window.__ModuleLoader__.load({
             return () => { live = false }
           }, [])
 
+          /** Re-read the Host capability and refresh the engine line. */
+          const refreshEngine = React.useCallback(async () => {
+            setEngineBusy(true)
+            try {
+              capability = null
+              const ready = await loadCapability()
+              const status = printEngineStatus()
+              setEngine({
+                status,
+                name: status === 'browser' ? browserEngineName(ready?.engine) : '',
+              })
+            } catch (error) {
+              setEngine({ status: 'none', name: '' })
+              setLastError(messageOf(error))
+            } finally {
+              setEngineBusy(false)
+            }
+          }, [])
+
+          /**
+           * Print the built-in test page through the configured engine.
+           *
+           * The Host prepares its own sample under MD2PDF_HOME, so the test
+           * never writes into a workspace. The one-off document overrides apply
+           * here exactly as they do to a real export.
+           */
+          const runTestPrint = React.useCallback(async () => {
+            setTestBusy(true)
+            setTestStatus(null)
+            try {
+              const body = {}
+              if (documentOverrides.page !== undefined) body.page = documentOverrides.page
+              if (documentOverrides.documentConfig !== undefined) {
+                body.documentConfig = documentOverrides.documentConfig
+              }
+              const { response, payload } = await requestRoute(TEST_PRINT_ROUTE, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify(body),
+              })
+              if (!response.ok
+                || payload === null
+                || typeof payload.printUrl !== 'string'
+                || typeof payload.finishToken !== 'string') {
+                throw namedError(
+                  payload !== null && typeof payload.code === 'string' ? payload.code : 'print-failed',
+                  payload !== null && typeof payload.message === 'string'
+                    ? payload.message
+                    : 'HTTP ' + response.status,
+                )
+              }
+              const ready = await loadCapability()
+              let path = ''
+              let engineLabel = ''
+              if (printEngineOf(ready) !== 'browser' && dshPrinterAvailable()) {
+                const result = await runPrintJob({
+                  printUrl: payload.printUrl,
+                  finishToken: payload.finishToken,
+                  printOptions: payload.printOptions,
+                })
+                path = String(result?.pdfPath ?? '')
+                engineLabel = t('engine.dsh')
+              } else {
+                // Close the prepared job before the fallback, so its one-shot
+                // server does not wait for the job deadline.
+                try {
+                  await requestRoute(FAIL_JOB_ROUTE, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ finishToken: payload.finishToken, reason: 'client-required' }),
+                  })
+                } catch {
+                  // The job expires on its own; the browser fallback still runs.
+                }
+                const browser = await exportPdf({ path: payload.sourcePath })
+                if (!browser.ok) throw namedError(browser.code ?? 'print-failed', browser.message)
+                path = String(browser.result.pdfPath ?? '')
+                engineLabel = browserEngineName(browser.result.printer)
+              }
+              setTestStatus({
+                kind: 'ok',
+                text: t('settings.testPrintDone', { path, engine: engineLabel }),
+              })
+            } catch (error) {
+              setLastError(messageOf(error))
+              setTestStatus({
+                kind: 'error',
+                text: t('settings.testPrintFailed', { message: messageOf(error) }),
+              })
+            } finally {
+              setTestBusy(false)
+            }
+          }, [])
+
+          /** Store the one-off document overrides for this window. */
+          const saveDocument = React.useCallback(() => {
+            if (documentDraftInvalid(docDraft)) {
+              setStatus({ kind: 'error', text: t('settings.docInvalid') })
+              return
+            }
+            documentOverrides = documentOverridesOf(docDraft)
+            setDocActive(documentOverridesActive())
+            setStatus({ kind: 'ok', text: t('settings.docSaved') })
+          }, [docDraft])
+
+          /** Drop every one-off override and clear the form. */
+          const resetDocument = React.useCallback(() => {
+            documentOverrides = {}
+            setDocDraft(emptyDocumentDraft())
+            setDocActive(false)
+            setStatus({ kind: 'ok', text: t('settings.docCleared') })
+          }, [])
+
           /** Run one preset action, surfacing the Host's failure code. */
           const act = React.useCallback(async (body) => {
             const { response, payload } = await requestRoute(PRESETS_ROUTE, {
@@ -2127,6 +2421,7 @@ window.__ModuleLoader__.load({
           }, [])
 
           const fail = React.useCallback((key, error) => {
+            setLastError(messageOf(error))
             setStatus({ kind: 'error', text: t(key, { message: messageOf(error) }) })
           }, [])
 
@@ -2320,12 +2615,34 @@ window.__ModuleLoader__.load({
 
           rows.push(h('h3', { key: 'heading', className: 'md2pdf-heading' }, t('settings.heading')))
           rows.push(h('p', { key: 'hint', className: 'md2pdf-hint' }, t('settings.hint')))
-          rows.push(h('p', {
-            key: 'engine',
-            className: 'md2pdf-hint',
-            'data-md2pdf': 'engine',
-            'data-engine': engine === null ? 'checking' : engine.status,
-          }, t('settings.engine', { engine: engineText })))
+          rows.push(h('div', { key: 'engine-row', className: 'md2pdf-row' },
+            h('p', {
+              className: 'md2pdf-hint',
+              'data-md2pdf': 'engine',
+              'data-engine': engine === null ? 'checking' : engine.status,
+            }, t('settings.engine', { engine: engineText })),
+            h('button', {
+              type: 'button',
+              className: 'md2pdf-btn',
+              'data-md2pdf-action': 'refresh-engine',
+              disabled: engineBusy,
+              onClick: refreshEngine,
+            }, t('settings.engineRefresh')),
+            h('button', {
+              type: 'button',
+              className: 'md2pdf-btn',
+              'data-md2pdf-action': 'test-print',
+              disabled: testBusy || engine === null || engine.status === 'none',
+              onClick: runTestPrint,
+            }, testBusy ? t('settings.testPrinting') : t('settings.testPrint'))))
+          if (testStatus !== null) {
+            rows.push(h('p', {
+              key: 'test-status',
+              className: testStatus.kind === 'error' ? 'md2pdf-warn' : 'md2pdf-hint',
+              'data-md2pdf': 'test-status',
+              role: 'status',
+            }, testStatus.text))
+          }
 
           if (presets.length > 0) {
             rows.push(h('div', {
@@ -2499,6 +2816,131 @@ window.__ModuleLoader__.load({
             }
           }
 
+          rows.push(h('h3', { key: 'doc-heading', className: 'md2pdf-heading' }, t('settings.docHeading')))
+          rows.push(h('p', { key: 'doc-hint', className: 'md2pdf-hint' }, t('settings.docHint')))
+          if (docActive) {
+            rows.push(h('p', {
+              key: 'doc-active',
+              className: 'md2pdf-flag',
+              'data-md2pdf': 'doc-active',
+            }, t('settings.docActive')))
+          }
+          rows.push(h('p', { key: 'doc-page-hint', className: 'md2pdf-hint' }, t('settings.docPageHint')))
+          rows.push(h('div', {
+            key: 'doc-form',
+            className: 'md2pdf-page-form',
+            'data-md2pdf': 'doc-form',
+          },
+          h(PageField, { key: 'size', label: t('settings.pageSize') },
+            h('select', {
+              className: 'md2pdf-input',
+              value: docDraft.size,
+              'data-md2pdf': 'doc-size',
+              'aria-label': t('settings.pageSize'),
+              onChange: (event) => { setDocDraft(draft => ({ ...draft, size: event.target.value })) },
+            }, [
+              h('option', { key: 'default', value: '' }, t('settings.docDefault')),
+              ...PAGE_SIZES.map(size => h('option', { key: size, value: size }, size)),
+            ])),
+          h(PageField, { key: 'orientation', label: t('settings.pageOrientation') },
+            h('select', {
+              className: 'md2pdf-input',
+              value: docDraft.landscape,
+              'data-md2pdf': 'doc-orientation',
+              'aria-label': t('settings.pageOrientation'),
+              onChange: (event) => { setDocDraft(draft => ({ ...draft, landscape: event.target.value })) },
+            }, [
+              h('option', { key: 'default', value: '' }, t('settings.docDefault')),
+              h('option', { key: 'portrait', value: 'portrait' }, t('settings.pagePortrait')),
+              h('option', { key: 'landscape', value: 'landscape' }, t('settings.pageLandscape')),
+            ])),
+          h(PageField, { key: 'margin', label: t('settings.pageMargin') },
+            h('input', {
+              type: 'number',
+              className: 'md2pdf-input',
+              min: PAGE_MARGIN_RANGE.min,
+              max: PAGE_MARGIN_RANGE.max,
+              step: '0.5',
+              value: docDraft.marginMm,
+              placeholder: t('settings.docDefault'),
+              'data-md2pdf': 'doc-margin',
+              'aria-label': t('settings.pageMargin'),
+              onChange: (event) => { setDocDraft(draft => ({ ...draft, marginMm: event.target.value })) },
+            })),
+          h(PageField, { key: 'font', label: t('settings.pageFontSize') },
+            h('input', {
+              type: 'number',
+              className: 'md2pdf-input',
+              min: PAGE_FONT_RANGE.min,
+              max: PAGE_FONT_RANGE.max,
+              step: '0.5',
+              value: docDraft.fontSize,
+              placeholder: t('settings.docDefault'),
+              'data-md2pdf': 'doc-font',
+              'aria-label': t('settings.pageFontSize'),
+              onChange: (event) => { setDocDraft(draft => ({ ...draft, fontSize: event.target.value })) },
+            })),
+          h(PageField, { key: 'header', label: t('settings.docHeader') },
+            h('input', {
+              type: 'text',
+              className: 'md2pdf-input',
+              value: docDraft.header,
+              placeholder: t('settings.docHeaderPlaceholder'),
+              'data-md2pdf': 'doc-header',
+              'aria-label': t('settings.docHeader'),
+              onChange: (event) => { setDocDraft(draft => ({ ...draft, header: event.target.value })) },
+            })),
+          h(PageField, { key: 'footer', label: t('settings.docFooter') },
+            h('input', {
+              type: 'text',
+              className: 'md2pdf-input',
+              value: docDraft.footer,
+              placeholder: t('settings.docFooterPlaceholder'),
+              'data-md2pdf': 'doc-footer',
+              'aria-label': t('settings.docFooter'),
+              onChange: (event) => { setDocDraft(draft => ({ ...draft, footer: event.target.value })) },
+            })),
+          h(PageField, { key: 'numbers', label: t('settings.docPageNumbers') },
+            h('select', {
+              className: 'md2pdf-input',
+              value: docDraft.pageNumbers,
+              'data-md2pdf': 'doc-page-numbers',
+              'aria-label': t('settings.docPageNumbers'),
+              onChange: (event) => { setDocDraft(draft => ({ ...draft, pageNumbers: event.target.value })) },
+            }, [
+              h('option', { key: 'default', value: '' }, t('settings.docDefault')),
+              h('option', { key: 'on', value: 'true' }, t('settings.docOn')),
+              h('option', { key: 'off', value: 'false' }, t('settings.docOff')),
+            ])),
+          h(PageField, { key: 'toc', label: t('settings.docToc') },
+            h('select', {
+              className: 'md2pdf-input',
+              value: docDraft.toc,
+              'data-md2pdf': 'doc-toc',
+              'aria-label': t('settings.docToc'),
+              onChange: (event) => { setDocDraft(draft => ({ ...draft, toc: event.target.value })) },
+            }, [
+              h('option', { key: 'default', value: '' }, t('settings.docDefault')),
+              h('option', { key: 'on', value: 'true' }, t('settings.docOn')),
+              h('option', { key: 'off', value: 'false' }, t('settings.docOff')),
+            ]))))
+          rows.push(h('div', { key: 'doc-actions', className: 'md2pdf-row' },
+            h('button', {
+              type: 'button',
+              className: 'md2pdf-btn',
+              'data-tone': 'primary',
+              'data-md2pdf-action': 'save-document',
+              disabled: phase === 'loading',
+              onClick: saveDocument,
+            }, t('settings.docSave')),
+            h('button', {
+              type: 'button',
+              className: 'md2pdf-btn',
+              'data-md2pdf-action': 'reset-document',
+              disabled: phase === 'loading' || !docActive,
+              onClick: resetDocument,
+            }, t('settings.docReset'))))
+
           rows.push(h('div', { key: 'editor-head', className: 'md2pdf-row' },
             h('span', { className: 'md2pdf-heading' }, editingLabel),
             dirty ? h('span', { className: 'md2pdf-flag' }, t('settings.dirty')) : null))
@@ -2599,6 +3041,58 @@ window.__ModuleLoader__.load({
           if (meta.maxBytes > 0) {
             rows.push(h('p', { key: 'limit', className: 'md2pdf-path' }, t('settings.limit', { bytes: String(meta.maxBytes) })))
           }
+
+          const diagnostics = {
+            engine: engine === null ? 'checking' : engine.status,
+            engineName: engine === null ? '' : engine.name,
+            printEngine: printEngineOf(capabilityValue),
+            afterExport: afterExportOf(capabilityValue),
+            fonts: fontSummary,
+            lastError: lastError === '' ? null : lastError,
+            homePath: meta.homePath ?? '',
+            documentOverrides: {
+              active: docActive,
+              page: documentOverrides.page ?? null,
+              documentConfig: documentOverrides.documentConfig ?? null,
+            },
+          }
+          rows.push(h('h3', { key: 'diag-heading', className: 'md2pdf-heading' }, t('settings.diagnostics')))
+          rows.push(h('p', { key: 'diag-hint', className: 'md2pdf-hint' }, t('settings.diagnosticsHint')))
+          rows.push(h('p', {
+            key: 'diag-error',
+            className: 'md2pdf-hint',
+            'data-md2pdf': 'last-error',
+          }, t('settings.lastError', {
+            message: lastError === '' ? t('settings.lastErrorNone') : lastError,
+          })))
+          if (meta.homePath !== '') {
+            rows.push(h('p', { key: 'diag-home', className: 'md2pdf-path' },
+              t('settings.homePath', { path: meta.homePath })))
+            rows.push(h('p', { key: 'diag-test', className: 'md2pdf-path' },
+              t('settings.testPath', { path: meta.homePath + '/test-print' })))
+          }
+          rows.push(h('div', { key: 'diag-actions', className: 'md2pdf-row' },
+            h('button', {
+              type: 'button',
+              className: 'md2pdf-btn',
+              'data-md2pdf-action': 'copy-diagnostics',
+              onClick: async () => {
+                try {
+                  await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2))
+                  setStatus({ kind: 'ok', text: t('settings.diagnosticsCopied') })
+                } catch (error) {
+                  setStatus({
+                    kind: 'error',
+                    text: t('settings.diagnosticsCopyFailed', { message: messageOf(error) }),
+                  })
+                }
+              },
+            }, t('settings.diagnosticsCopy'))))
+          rows.push(h('pre', {
+            key: 'diag-json',
+            className: 'md2pdf-diagnostics',
+            'data-md2pdf': 'diagnostics',
+          }, JSON.stringify(diagnostics, null, 2)))
 
           if (dialog !== null && dialog.kind === 'save') {
             rows.push(h(Dialog, {
