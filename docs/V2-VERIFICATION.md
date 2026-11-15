@@ -43,7 +43,7 @@ Preconditions:
 
 | Case | Source | Expected | Result |
 |---|---|---|---|
-| S2-1 gongwen baseline | `samples/sample.md` + gongwen | 4 pages, A4, margins 37/26/35/28 mm within 0.5 mm, STFangsong/STKaiti, right-sidebar PDF, outline bookmarks | PASS 2026-11-15 15:40. 4 pages, A4 594.96x841.92 pt; left 28.05, right 25.74 mm; top 34.24/33.20/38.54/32.67 mm (accepted S1 exception); STFangsong/STKaiti/STSongti/PingFang/Times embedded; outline 9 entries under /Outlines; footer 第 N 页 / 共 4 页 centered at 106.0 mm on all pages. |
+| S2-1 gongwen baseline | `samples/sample.md` + gongwen | 4 pages, A4, margins 37/26/35/28 mm within 0.5 mm, STFangsong/STKaiti, right-sidebar PDF, outline bookmarks | PASS for the PDF, 2026-11-15 15:40. 4 pages, A4 594.96x841.92 pt; left 28.05, right 25.74 mm; top 34.24/33.20/38.54/32.67 mm (accepted S1 exception); STFangsong/STKaiti/STSongti/PingFang/Times embedded; outline 9 entries under /Outlines; footer 第 N 页 / 共 4 页 centered at 106.0 mm on all pages. The agent path writes without a preview, so the right-sidebar viewer is not verified here. |
 | S2-2 page numbers only | front matter `pdf.pageNumbers: true` | footer page numbers centered on page 1 and the last page; header blank, with no date or title | PASS. 1 page; footer 第 1 页 / 共 1 页 at 105.0 mm; header empty. |
 | S2-3 header only | front matter `pdf.header: 内部资料` | header shows the text; footer blank, with no URL, asset token, or page number | PASS after 4343056. Header starts at 18.00 mm from the left edge; footer empty. The first run at 9bd167f put it at 1.06 mm. |
 | S2-4 footer only | front matter `pdf.footer: 页脚文字` | footer shows the text; header blank | PASS. Footer 页脚文字 at 105.0 mm; header empty. |
