@@ -73,6 +73,10 @@ Seven print cases ran through `md2pdf_export` after a DSH restart:
 - page numbers only, footer only, contents, paper fields, explicit page break:
   PASS.
 - header only: PASS after the fix; the header now starts at 18 mm.
+- test print: PASS; one A4 page at MD2PDF_HOME/test-print/test-print.pdf,
+  224,171 bytes, Tagged yes, engine and path shown.
+- viewer: PASS; a sidebar export of README.md opened in the right-sidebar
+  preview (user report).
 
 The first run at 9bd167f found two defects. Chromium only builds the PDF
 outline when generateTaggedPDF is on, and the header template started at the
@@ -85,8 +89,7 @@ These need a DSH restart with this branch linked and, for the last one, a
 Windows machine. Each case is listed with its expected result in
 docs/V2-VERIFICATION.md.
 
-- S2 test print: Settings → Test print; the other seven S2 cases passed on
-  2026-11-15.
+- S2 is complete on macOS: all eight cases passed on 2026-11-15.
 - S3 agent broker: client closed mid-job, browser engine, two windows,
   cancellation. The plain tool export passed on 2026-11-15.
 - S4 preset bundle and history: export, import with conflicts, history list,
