@@ -37,6 +37,28 @@ export const DEFAULT_PAGE = Object.freeze({
   landscape: false,
 })
 
+/**
+ * The page policy carried inside the printable document itself.
+ *
+ * The DSH path is guarded by the resource server's response header. This meta
+ * tag is what guards the browser fallback, where the page is loaded from a
+ * `file:` URL and no response header exists. `file:` is allowed for images,
+ * fonts, and the base URL only, which is what a local document with relative
+ * assets needs; scripts, frames, objects, forms, and network access stay off.
+ */
+export const PRINT_CSP = [
+  "default-src 'none'",
+  "img-src 'self' data: file:",
+  "style-src 'unsafe-inline'",
+  "font-src 'self' data: file:",
+  "script-src 'none'",
+  "connect-src 'none'",
+  "frame-src 'none'",
+  "object-src 'none'",
+  "form-action 'none'",
+  "base-uri 'self' file:",
+].join('; ')
+
 /** The paper stylesheet; `page` values are interpolated once per document. */
 function stylesheet(page) {
   const margin = page.marginMm
@@ -191,6 +213,22 @@ summary { cursor: default; font-weight: 600; }
 .katex-display, .math-display { break-inside: avoid; text-align: center; margin: 1em 0; }
 .footnotes { margin-top: 2.4em; padding-top: 0.8em; border-top: 1px solid #e2e5ea; font-size: 0.9em; }
 sup, sub { line-height: 0; }
+.md2pdf-toc { break-before: page; page-break-before: always; margin: 0 0 1.2em; }
+.md2pdf-toc-title { margin: 0 0 0.9em; font-size: 1.2em; font-weight: 650; text-align: center; text-indent: 0; }
+.md2pdf-toc ol { margin: 0; padding-left: 0; list-style: none; }
+.md2pdf-toc li { margin: 0.28em 0; text-indent: 0; }
+.md2pdf-toc-level-2 { padding-left: 1.4em; }
+.md2pdf-toc-level-3 { padding-left: 2.8em; }
+.md2pdf-toc a { color: inherit; border-bottom: none; text-decoration: none; }
+.md2pdf-body { break-before: page; page-break-before: always; }
+.md2pdf-pagebreak { break-after: page; page-break-after: always; height: 0; margin: 0; }
+.md2pdf-paper { margin: 0 0 1.6em; text-align: center; }
+.md2pdf-paper-title { margin: 0 0 0.5em; font-size: 1.8em; font-weight: 700; line-height: 1.35; text-indent: 0; }
+.md2pdf-paper-authors { margin: 0 0 0.3em; text-indent: 0; }
+.md2pdf-paper-affiliations { margin: 0 0 0.6em; font-size: 0.86em; color: #4a5158; text-indent: 0; }
+.md2pdf-paper-date { margin: 0 0 1em; font-size: 0.86em; color: #4a5158; text-indent: 0; }
+.md2pdf-paper-abstract, .md2pdf-paper-keywords { text-align: left; font-size: 0.9em; margin: 0.6em 0; text-indent: 0; }
+.md2pdf-paper-label { font-weight: 650; }
 `.trim()
 }
 
@@ -205,7 +243,13 @@ function escape(value) {
 
 /**
  * Assemble the printable page.
- * @param input - document title, base URL, body markup, theme layer, and user CSS.
+ *
+ * Order inside the body is deliberate: the paper block opens the first body
+ * page, the front matter table follows it, the TOC sits on its own page, and
+ * the body starts a new page after the TOC. Without a TOC the body is emitted
+ * unwrapped, so an ordinary document keeps its exact previous markup.
+ * @param input - document title, base URL, paper block, front matter, TOC, body
+ *   markup, theme layer, user CSS, and the page override layer.
  * @param page - page geometry and typography.
  * @returns a complete HTML document.
  */
@@ -214,13 +258,25 @@ export function buildHtml(input, page = DEFAULT_PAGE) {
   const frontmatter = input.frontmatter === '' || input.frontmatter === undefined
     ? ''
     : `<p class="frontmatter-caption">Front matter</p>${input.frontmatter}`
-  // Three layers, later winning: the structural sheet, the selected preset, and
-  // the user's own rules. Equal specificity therefore favours the user.
+  const paper = typeof input.paper === 'string' ? input.paper : ''
+  const toc = typeof input.toc === 'string' ? input.toc : ''
+  const body = input.bodyAfterToc === true
+    ? `<div class="md2pdf-body">\n${input.body}\n</div>`
+    : input.body
+  // The optional prefixes add one newline after a present block, so a document
+  // with neither a paper block nor a TOC keeps exactly the previous body markup.
+  const paperPrefix = paper === '' ? '' : paper + '\n'
+  const tocPrefix = toc === '' ? '' : toc + '\n'
+  // Four layers, later winning: the structural sheet, the selected preset, the
+  // user's own rules, and finally the explicit page override for this export.
   const theme = typeof input.themeCss === 'string' && input.themeCss.trim() !== ''
     ? `<style id="md2pdf-theme">\n${safeCss(input.themeCss)}\n</style>`
     : ''
   const custom = typeof input.customCss === 'string' && input.customCss.trim() !== ''
     ? `<style id="md2pdf-custom">\n${safeCss(input.customCss)}\n</style>`
+    : ''
+  const pageCss = typeof input.pageCss === 'string' && input.pageCss.trim() !== ''
+    ? `<style id="md2pdf-page">\n${safeCss(input.pageCss)}\n</style>`
     : ''
   return `<!doctype html>
 <html lang="${escape(input.lang ?? 'zh-CN')}">
@@ -228,6 +284,7 @@ export function buildHtml(input, page = DEFAULT_PAGE) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="generator" content="dsh-md2pdf">
+<meta http-equiv="Content-Security-Policy" content="${escape(PRINT_CSP)}">
 <title>${escape(input.title)}</title>
 ${base}
 <style>
@@ -235,11 +292,12 @@ ${stylesheet(page)}
 </style>
 ${theme}
 ${custom}
+${pageCss}
 </head>
 <body>
 <main>
-${frontmatter}
-${input.body}
+${paperPrefix}${frontmatter}
+${tocPrefix}${body}
 </main>
 </body>
 </html>

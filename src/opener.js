@@ -16,9 +16,9 @@ import { PdfError } from './pdf.js'
  */
 export function openCommandFor(platform) {
   if (platform === 'win32') {
-    // `start` treats its first quoted argument as the window title, hence the
-    // empty one before the path.
-    return { file: 'cmd.exe', args: ['/c', 'start', '""'] }
+    // explorer.exe receives the path as one argument and does not parse shell
+    // metacharacters, so a file named report&powershell&.pdf stays a file name.
+    return { file: 'explorer.exe', args: [] }
   }
   if (platform === 'darwin') return { file: 'open', args: [] }
   if (platform === 'linux') return { file: 'xdg-open', args: [] }

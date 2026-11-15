@@ -11,7 +11,7 @@
  * generated document and applied as body padding, which is what makes the
  * printed margins visible in the miniature.
  */
-import { DEFAULT_PAGE } from './document.js'
+import { pageMarginShorthand, pageOverrideCss } from './page-css.js'
 import { renderDocument } from './html-build.js'
 import { listPresets, readPreset } from './presets.js'
 
@@ -38,14 +38,13 @@ export const PREVIEW_MARKDOWN = `# 文档标题
  *
  * The base stylesheet declares a uniform margin and a preset may replace it, so
  * the last declaration in document order wins — the same cascade the print
- * engine applies.
+ * engine applies. The shared parser also supplies the default when a document
+ * carries no page margin.
  * @param html - a complete printable document.
  * @returns the margin shorthand, falling back to the default geometry.
  */
 export function pageMarginOf(html) {
-  const matches = [...html.matchAll(/@page\s*\{[^}]*?margin\s*:\s*([^;}]+)/g)]
-  const last = matches[matches.length - 1]
-  return last === undefined ? `${DEFAULT_PAGE.marginMm}mm` : last[1].trim()
+  return pageMarginShorthand(html)
 }
 
 /**
@@ -59,15 +58,24 @@ export function withPageFrame(html) {
 }
 
 /**
- * Build one preview document from a stylesheet.
+ * Build one preview document from a preset's stylesheet and page metadata.
+ *
+ * The page metadata is the same partial override the exporter appends, so the
+ * miniature shows the margin and font size the next export will use. Because
+ * the override is emitted after the preset sheet, the margin readback sees the
+ * effective box.
  * @param css - the preset's override layer.
+ * @param page - the preset's optional page override.
  * @returns a complete HTML document.
  */
-export async function previewHtml(css = '') {
+export async function previewHtml(css = '', page = {}) {
+  const override = page ?? {}
   const rendered = await renderDocument({
     markdown: PREVIEW_MARKDOWN,
     title: 'preview',
     themeCss: typeof css === 'string' ? css : '',
+    page: override,
+    pageCss: pageOverrideCss(override),
     // A preview must never wait on an external tool, so it always uses the
     // built-in renderer even when the exporter is configured for pandoc.
     renderer: 'builtin',
@@ -83,7 +91,14 @@ export async function buildPreviews() {
   const { selected, presets } = await listPresets()
   const built = {}
   for (const preset of presets) {
-    built[preset.id] = await previewHtml((await readPreset(preset.id)).css)
+    try {
+      const stored = await readPreset(preset.id)
+      built[preset.id] = await previewHtml(stored.css, stored.page ?? {})
+    } catch {
+      // One unusable preset must not blank the whole settings page. Its card
+      // shows the default box instead.
+      built[preset.id] = await previewHtml('', {})
+    }
   }
   return { presets: built, selected }
 }

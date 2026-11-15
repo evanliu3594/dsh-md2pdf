@@ -88,7 +88,7 @@ const CASES = [
 ]
 
 /** Features the built-in renderer knowingly leaves to pandoc. */
-const FALLBACK_GAPS = new Set(['heading identifier'])
+const FALLBACK_GAPS = new Set()
 
 /**
  * Render one case with one pandoc reader.

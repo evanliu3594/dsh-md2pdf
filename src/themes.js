@@ -28,9 +28,9 @@ export const DEFAULT_THEME = 'lark'
 const LATIN = '"Times New Roman",Times,"Liberation Serif","Nimbus Roman"'
 const FANGSONG = `${LATIN},"FangSong","FangSong_GB2312","STFangsong","仿宋",FangSong,serif`
 const SONG = `${LATIN},"SimSun","宋体","Songti SC","STSong","Source Han Serif SC","Noto Serif CJK SC",serif`
-const HEITI = `${LATIN},"SimHei","黑体","Source Han Sans SC","Noto Sans CJK SC",sans-serif`
-const KAITI = `${LATIN},"KaiTi","KaiTi_GB2312","STKaiti","楷体",KaiTi,serif`
-const XIAOBIAOSONG = `${LATIN},"FZXiaoBiaoSong-B05S","方正小标宋简体","STZhongsong","华文中宋","SimSun","宋体",serif`
+const HEITI = `${LATIN},"SimHei","黑体","Heiti SC","PingFang SC","Source Han Sans SC","Noto Sans CJK SC",sans-serif`
+const KAITI = `${LATIN},"KaiTi","KaiTi_GB2312","STKaiti","Kaiti SC","楷体",KaiTi,serif`
+const XIAOBIAOSONG = `${LATIN},"FZXiaoBiaoSong-B05S","方正小标宋简体","STZhongsong","华文中宋","Songti SC","SimSun","宋体",serif`
 
 /** Rules shared by the two national-standard presets: a three-line table. */
 const THREE_LINE_TABLE = `
@@ -259,6 +259,29 @@ ${PLAIN_FRONTMATTER}
 img { max-width: 100%; display: block; margin: 6pt auto; }
 sup.footnote-ref a { color: #000; }
 .footnotes { font-size: 9pt; border-top: 0.5pt solid #000; }
+.md2pdf-toc { font-size: 10.5pt; }
+.md2pdf-toc-title { font-family: ${HEITI}; font-size: 14pt; margin: 0 0 9pt; text-indent: 0; }
+.md2pdf-toc li { margin: 0 0 2pt; }
+.md2pdf-paper { margin: 0 0 12pt; }
+.md2pdf-paper-title {
+  font-family: ${HEITI};
+  font-size: 18pt;
+  font-weight: 700;
+  line-height: 1.4;
+  margin: 0 0 8pt;
+  text-indent: 0;
+}
+.md2pdf-paper-authors { font-family: ${SONG}; font-size: 12pt; margin: 0 0 4pt; text-indent: 0; }
+.md2pdf-paper-affiliations { font-size: 9pt; color: #000; margin: 0 0 3pt; text-indent: 0; }
+.md2pdf-paper-date { font-size: 9pt; color: #000; margin: 0 0 10pt; text-indent: 0; }
+.md2pdf-paper-abstract, .md2pdf-paper-keywords {
+  text-align: justify;
+  font-size: 9pt;
+  line-height: 1.65;
+  text-indent: 0;
+  margin: 0 0 8pt;
+}
+.md2pdf-paper-label { font-family: ${HEITI}; font-weight: 700; }
 `.trim()
 
 /**

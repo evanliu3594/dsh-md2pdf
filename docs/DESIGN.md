@@ -110,6 +110,8 @@ v2 把“渲染”和“打印”拆开。
 | `src/export.js` | 导出编排；拆成 prepare 与 finish 两步；浏览器回退 |
 | `src/document-config.js` | 解析 `pdf.*` front matter，合并默认值、预设元数据、front matter、请求覆盖 |
 | `src/page-css.js` | 生成最终 `@page`/`body` 覆盖层；把 CSS 边距解析成英寸；复用 `pageMarginOf()` |
+| `src/print-options.js` | 生成 `printToPDF` 参数：页眉页脚模板、居中页码、PDF 大纲开关、边距 |
+| `src/test-print.js` | 在 `MD2PDF_HOME/test-print` 写内置测试页 |
 | `src/print-jobs.js` | 打印任务状态机、令牌、队列、超时、客户端在场判断 |
 | `src/print-server.js` | 一次性 loopback 资源服务：HTML、图片、字体；token、CSP、路径校验、超时关闭 |
 | `src/pdf.js` | 浏览器打印适配器、`awaitPdf()`、PDF 头尾校验；删除不可达的 Host Electron 分支 |
@@ -150,9 +152,14 @@ Client 拿不到 DSH 打印器时，改调 `/md2pdf/export`。两条路径返回
   → POST /md2pdf/finish
   → Host 写盘、解析任务 Promise
   → 工具返回结果
+
+失败分支：Client → POST /md2pdf/print-jobs/fail { finishToken, reason }
+  → Host 置 failed、关闭资源服务、不写盘
 ```
 
 Host 记录最近一次客户端轮询时间。工具等待任务时，若 10 秒内没有客户端在场，回退浏览器；浏览器也不可用，返回 `no-printer`。Web GUI 没有 DSH 打印器，客户端不启动轮询；任务只能走浏览器。
+
+轮询默认持有 20 秒，入口记录一次在场，此后每 5 秒续一次；单个固定键，避免长轮询超过 10 秒在场窗口。
 
 任何已连接的 Desktop 客户端都可以认领工具任务，先到先得。工具任务不执行 `afterExport`，不打开预览，只返回路径。UI 导出由发起的客户端打印，`afterExport` 适用。用户切换会话不影响工具任务的写盘；预览只属于 UI 导出。
 
@@ -193,7 +200,7 @@ Client 侧的 DSH 适配器不进入 Host。能力上报分成两段：
 
 任一高优先级来源提供显式字段时，Host 在预设 CSS 之后追加对应的 `@page`/`body` 规则。只改 `fontSize` 时不要输出 `@page` 边距；只改 `marginMm` 时不要输出纸张尺寸。全部缺省时，预设 CSS 的 `@page` 是权威。内置国标预设不写 `page` 元数据，避免公文 37/26/35/28 mm 被默认 18 mm 覆盖。
 
-v2 只支持一个统一页框：`@page` 的 `size` 与 `margin`（1–4 个值）。不支持 `:first`、`:left`、`:right`、命名页、`margin-top` 等长写，也不支持用 `!important` 改页框。预设使用这些写法时，DSH 路径按统一页框打印并给出警告；浏览器回退保持浏览器自己的行为。
+v2 只支持一个统一页框：`@page` 的 `size` 与可转换的 `margin`（1–4 个长度值）。`margin` 值可带 `!important`，只取长度本身。`:first`、`:left`、`:right`、命名页、`margin-top` 等长写、`auto`、`calc()` 或 px 等无法转换的写法，DSH 路径退回默认统一页框（18 mm）并把原因写进 `warnings`；浏览器回退保持浏览器自己的行为。预览路由逐个预设隔离，一个坏预设不会清空整页缩略图。
 
 ### front matter
 
@@ -214,7 +221,7 @@ pdf.toc: true
 ---
 ```
 
-`pdf.*` 键只作为配置，不进入正文的 front matter 表格。`title`、`author`、`date`、`tags` 继续显示。
+`pdf.*` 键只作为配置，不进入正文的 front matter 表格。`title`、`author`、`date`、`tags` 继续显示。`lang` 也是配置键：它决定目录标题与论文标签的语言，同样不进入字段表；语言以 `zh` 开头用中文，其余用英文。
 
 解析规则：
 
@@ -232,12 +239,15 @@ pdf.toc: true
 | 模板 | 键 |
 |---|---|
 | 论文 | `pdf.paper.title`、`authors`、`affiliations`、`abstract`、`keywords`、`date` |
-| 通用 | `pdf.header`、`pdf.footer`、`pdf.pageNumbers`、`pdf.toc` |
+| 通用 | `pdf.header`、`pdf.footer`、`pdf.pageNumbers`、`pdf.toc`、`pdf.outline` |
 
 语义：
 
 - 论文：题名、作者、单位、摘要、关键词、日期由 paper 预设排版；不做独立封面，题名页就是正文首页。
-- 目录：按 h1–h3 生成可点击列表，标题可配；后接分页；不做目录页码。
+- 目录：按 h1–h3 生成可点击列表，标题由 front matter `lang` 决定（默认 `zh-CN`，取“目录”或“Contents”）；目录独占一页，正文从下一页开始；不做目录页码。
+- 标题 id：`md2pdf-h-<slug>`，同文重名依次加 `-2`、`-3`；slug 保留中文，拉丁字母转小写，空白、标点与下划线折成一个连字符。标题内的 HTML 注释不算可见文字，两种生成器都隐藏它。两种生成器使用同一套 id 规则；标题含公式、原始实体或脚注时，各自的可见文本可能不同，id 与目录标签也可能不同。常见命名实体与数字实体都会解码，实体名大小写精确匹配；未收录的名字保持字面文本。
+- 显式分页：正文单独一行 `<!-- pagebreak -->` 生成 `<div class="md2pdf-pagebreak"></div>`。行首缩进四列属于代码块，行内出现不算指令。
+- 论文字段由 paper 预设渲染成正文首页的标题块，不设独立封面；非空字段换用其它预设时不渲染，并记录一条警告；未知 `pdf.paper.*` 键单独警告；浏览器回退不返回警告。
 - 页眉页脚：模板字符串，支持 `{page}`、`{total}`、`{title}`、`{author}`、`{date}`；由 `pageNumbers`/`header`/`footer` 任一启用 `displayHeaderFooter`。
 
 ### 样式分层
@@ -249,7 +259,7 @@ v2 的顺序：
 3. 页面覆盖层（显式 `page` 时）。
 4. 打印页面附加层（页眉页脚占位、目录、分页）。
 
-用户 CSS 的 `</style` 继续转义。页面覆盖层只包含 `@page` 与 `body` 的字号/行高，不重写预设的其它规则。
+用户 CSS 的 `</style` 继续转义。页面覆盖层只包含 `@page` 与 `body` 的字号，不重写预设的其它规则。
 
 ### 预设库 v2
 
@@ -272,6 +282,7 @@ v2 的顺序：
 - `description`、`page` 可选。`page` 只在用户显式保存页面设置时写入，且只保存用户改过的字段；缺省时预设 CSS 的 `@page` 是权威。字体仍由预设 CSS 决定。
 - 页眉、页脚、页码、目录属于文档配置（`pdf.*`）或插件配置，不写入预设元数据。预设只负责这些结构的样式。
 - 版本 1 索引读取时补默认值，写回版本 2；CSS 文件不动。
+- 内置预设的 CSS 只在首次播种或「恢复内置预设」时写入磁盘。升级不会改写已有的预设文件，因此新增的论文块样式只对新建或恢复的预设生效；结构样式表仍为旧预设提供最小重置。
 - 保存顺序不变：先 CSS，后索引。
 - 导入/导出用一份 JSON 包：`{ version, presets: [{ id, name, description, page, css }] }`。导入时校验标识、名称、CSS 大小、重名；默认不覆盖，用户确认后覆盖。
 - 历史版本放在 `MD2PDF_HOME/history/<id>/<timestamp>.css`；保存前备份；保留最近 20 份；设置页可查看与恢复。
@@ -359,19 +370,25 @@ Client 把 Host 返回的参数原样传给 `<webview>.printToPDF()`：
   headerTemplate: config.headerTemplate,
   footerTemplate: config.footerTemplate,
   generateDocumentOutline: config.outline,
+  generateTaggedPDF: config.outline,   // 大纲由 tagged 结构树生成
   pageRanges: '',
 }
 ```
 
 页边距从最终 `@page` 解析。禁止继续使用固定的 `page.marginMm`，否则公文预设的 37/26/35/28 mm 会被压成 18 mm。Host 传给 Client 的 `config.page` 是只含显式字段的 `PageOverride`；`landscape` 未设置时不传，交给 CSS `@page`。`displayHeaderFooter` 由页眉、页脚或页码任一启用决定。
 
+Chromium 把空字符串的页眉或页脚模板当作未设置，改用自带默认值：页眉显示日期与标题，页脚显示 URL 与页码。因此 `displayHeaderFooter` 为真时，未配置的一侧必须传一个非空且不可见的模板（`<span></span>`）。只有 `displayHeaderFooter` 为假（页眉、页脚、页码都未配置）时，两侧模板才为空。
+
+Host 在 `src/print-options.js` 生成参数，Client 原样转发；参数只由 Host 决定。
+
 页眉页脚模板由 Host 生成并转义：
 
 - 页码页脚默认居中，作用于所有页；v2 不做奇偶交替。
-- 页脚支持 `{page}`、`{total}`、`{title}`、`{date}`。
-- 页眉支持 `{title}`、`{author}`、`{date}`。
+- 页脚支持 `{page}`、`{total}`、`{title}`、`{author}`、`{date}`。`{date}` 取 front matter 的 `date`，没有时用 Host 本地当天。
+- 页眉支持同样五个变量；未识别的占位符保持字面文本，已识别但没有取值的变量渲染为空。
 - 模板内联字体与字号；不加载外部资源。
-- `generateDocumentOutline` 用标题生成书签；标题需要稳定 id 时由渲染器补 slug。
+- 模板按页面左右边距加水平内边距（`box-sizing:border-box`）：页眉文字与正文左边缘对齐，居中页脚按版心居中。
+- `generateDocumentOutline` 用标题生成书签；标题需要稳定 id 时由渲染器补 slug。Chromium 只在同时开启 `generateTaggedPDF` 时生成书签，两个参数都由 `outline` 开关控制。
 
 ### 落盘与校验
 
@@ -392,19 +409,24 @@ Host 收到 PDF 字节后：
 状态：
 
 ```
-prepared → claimed → printing → finished
-                    ↘ failed
+prepared → claimed → printing → finishing → finished
+prepared/claimed/printing → failed
+finishing → failed（仅写入方）
 prepared/claimed/printing → expired
+finishing → expired（仅在 finishGraceMs 之后）
 ```
 
 - `prepared`：Host 已渲染，等待客户端。
 - `claimed`：客户端已取走任务。
 - `printing`：客户端已开始打印。
+- `finishing`：写入方已取得写锁，正在写盘。写锁期间外部 `fail` 被拒绝，超时清扫跳过该任务；写入方提交后转 `finished`，写盘失败时由写入方转 `failed`。停在 `finishing` 超过 `finishGraceMs`（默认 30 秒）的任务才允许被清扫成 `expired`。
 - `finished`：PDF 已写盘。
-- `failed`：客户端报告错误或 PDF 校验失败。
+- `failed`：客户端报告错误、PDF 校验失败或写盘失败。
 - `expired`：超时，资源服务关闭。
 
-任务字段：`id`、`assetToken`、`finishToken`、`sessionId`、`sourcePath`、`targetPath`、`html`、`assetRoot`、`printOptions`、`state`、`createdAt`、`deadline`、`owner`（`ui` 或 `tool`）。
+任务字段：`id`、`assetToken`、`finishToken`、`sessionId`、`sourcePath`、`targetPath`、`html`、`assetRoot`、`printOptions`、`state`、`createdAt`、`deadline`、`owner`（`ui` 或 `tool`）；进入 `finishing` 时记录 `finishingAt`，作为写锁宽限的起点。
+
+工具的 10 秒在场检查发生在创建任务之前：有客户端轮询就创建任务，没有则按引擎回退。任务在资源服务启动、`printUrl` 可用之前不可被 broker 认领；`ready` 标记由导出器在资源服务就绪后设置。长轮询只交付 ready 的 tool 任务。
 
 队列同一时刻只允许一个 `printing` 任务；其余 `prepared` 等待。客户端一次只执行一个 `printToPDF`。UI 直连导出与 tool 代理任务都经过客户端同一个打印队列；Host 任务队列负责顺序与状态。
 
@@ -423,6 +445,8 @@ Agent 工具结果只返回路径与结果，不打开预览。
 | `file-busy` | 409 | 目标 PDF 被占用，无法替换 |
 | `asset-server-failed` | 500 | 资源服务启动失败 |
 | `pdf-invalid` | 502 | 回传字节不是完整 PDF |
+| `client-error` | 502 | 客户端报告的未分类错误 |
+| `write-failed` | 500 | 临时文件写入失败 |
 
 现有 `no-printer`、`print-failed`、`not-a-pdf`、`empty-output` 保留。
 
@@ -470,7 +494,9 @@ ctx.sidebarRight.openResource(result.previewAddress)
 - `system`：用系统默认程序打开（现有 `openPath`）。
 - `none`：只提示路径。
 
-Host 在 `finish` 前检查目标文件可读；可读时才返回 `previewAddress`。`openResource` 返回 void，查看器后续加载失败由 DSH 显示；插件回退系统打开。
+成功 `finish` 后，Host 对 UI 任务执行 `afterExport`：`system` 由 Host 调 `openPath`。打开失败记在结果的 `open` 字段，写盘仍算成功。工具任务不执行 `afterExport`。
+
+Host 在 `finish` 前检查目标文件可读；可读时才返回 `previewAddress`。`openResource` 返回 void，查看器后续加载失败由 DSH 显示。查看器、地址缺失或 `openResource` 同步抛错时，Client 用 `finishToken` 调 `/md2pdf/open`，由 Host 解析已提交目标后回退系统打开。
 
 v2 不自动刷新已经打开的 PDF。重新导出后，用户关闭再打开该标签；自动刷新留给后续版本。PDF 在会话工作区外时，预览可能被文件访问策略拒绝；此时回退系统打开，并提示原因。`ctx.sidebarRight` 不可用时同样回退系统打开。
 
@@ -511,12 +537,15 @@ document.fonts.check('16px "Family"', 'A')
 | `/md2pdf/export` | POST | 浏览器回退导出；agent 工具无客户端时使用 |
 | `/md2pdf/prepare` | POST | 渲染并创建打印任务 |
 | `/md2pdf/finish` | POST | 接收 PDF 字节并写盘 |
+| `/md2pdf/open` | POST | 用系统默认程序打开已完成 UI 任务的 PDF |
 | `/md2pdf/print-jobs/next` | GET | 客户端长轮询取任务 |
+| `/md2pdf/print-jobs/fail` | POST | 客户端报告工具任务失败 |
+| `/md2pdf/test-print` | POST | 渲染内置测试页并创建打印任务 |
 | `/md2pdf/settings` | GET | 预设库、选中 CSS |
 | `/md2pdf/presets` | POST | 预设动作 |
 | `/md2pdf/previews` | GET | 缩略图页面 |
 
-每条路由先调用 `ctx.connection.requestRejection()`。`finish` 额外校验 `finishToken`；`print-jobs/next` 只返回未认领任务，客户端每次轮询由 connection fence 鉴权；`finish` 只接受 `application/pdf`，上限 64 MiB。
+每条路由先调用 `ctx.connection.requestRejection()`。`finish` 额外校验 `finishToken`；`open` 只接受 `finishToken`，只服务 UI 任务，目标由 Host 从任务解析，客户端不传路径、任务 id 或 URL；`print-jobs/next` 只返回未认领任务，客户端每次轮询由 connection fence 鉴权；`print-jobs/fail` 只接受任务的确切 `finishToken` 与白名单失败原因，把任务置为 `failed` 并关闭资源服务，不写盘；任务正在 `finishing` 时返回 409，由写入方决定结果；`finish` 只接受 `application/pdf`，上限 64 MiB。
 
 `prepare` 请求体：`{ path, sessionId?, preset?, page?, documentConfig? }`。`sessionId` 用于计算 `previewAddress`；没有它时不返回预览地址。`documentConfig` 只来自本次 UI 覆盖，不写回源文件。
 
@@ -551,12 +580,12 @@ document.fonts.check('16px "Family"', 'A')
 
 新增区域：
 
-- 打印引擎：显示 DSH 内置 / Edge / Chrome / 无；刷新按钮；测试打印。
+- 打印引擎：显示 DSH 内置 / Edge / Chrome / 无；刷新按钮；测试打印。测试页写在 `MD2PDF_HOME/test-print`，不进入用户工作区；没有 DSH 打印器时走浏览器回退。
 - 页面：纸张、方向、页边距、正文字号；保存到当前预设的 `page` 元数据；预览。
 - 字体：字体表、缺失警告、回退预览。
-- 预设：导入、导出、历史、恢复内置。
-- 文档：从当前标签打开，编辑本次导出的 `pdf.*` 覆盖（页面、页眉页脚、目录）；不写回源文件。
-- 诊断：引擎、字体、最近错误、临时目录、复制 JSON。
+- 预设：导出、导入、历史、恢复内置。导出是一个 JSON 包（版本 2，含每个预设的样式、页面元数据与当前选择），导入先在内存校验全部条目再写盘；同名预设默认跳过并报告，确认覆盖后替换样式、页面与描述，保留已有名称。历史保存在 `MD2PDF_HOME/history/<id>/<时间戳>-<随机>.css`，每个预设保留最近 20 份，保存与恢复前各记录一次。
+- 文档覆盖：页面、页眉、页脚、页码、目录；只作用于本窗口后续导出，源文件与预设不变；清除即恢复文件取值。
+- 诊断：引擎、字体、最近错误、插件目录、复制 JSON；不含文档内容。
 
 现有卡片、编辑器、保存、排序、恢复交互不变。新增控件沿用 DSH 主题 token 与 locale 文案。
 
@@ -568,12 +597,14 @@ document.fonts.check('16px "Family"', 'A')
 |---|---|---|
 | `printEngine` | `auto` | `auto`、`dsh`、`browser` |
 | `afterExport` | `dsh` | `dsh`、`system`、`none` |
-| `pageNumbers` | false | 默认页码开关；预设/front matter 可覆盖 |
-| `outline` | true | 生成 PDF 大纲 |
+| `pageNumbers` | false | 默认页码开关；front matter 与请求可覆盖 |
+| `outline` | true | 生成 PDF 大纲；front matter `pdf.outline` 与请求可覆盖 |
 | `allowRemoteImages` | false | 是否允许远程图片 |
 | `jobTimeoutMs` | 120000 | 打印任务超时 |
 
-继续使用 `browserPath`、`pandocPath`、`renderer`、`timeoutMs`。`engine` 字段保留兼容：`electron` 映射为 `auto` 并记录警告。
+继续使用 `browserPath`、`pandocPath`、`renderer`、`timeoutMs`。`engine` 字段保留兼容：`electron` 按 `auto` 处理。
+
+v2 实现尚未接通两项字段：`jobTimeoutMs` 仍固定 120 秒，`allowRemoteImages` 仍为关闭（远程图片被 CSP 拦截）。两项保留在配置表中，供后续版本接入。
 
 环境变量：
 
@@ -586,9 +617,9 @@ document.fonts.check('16px "Family"', 'A')
 
 - `presets.json` v1 → v2：补 `version`、`description`；`page` 只在用户保存页面设置时添加；CSS 不动；写回 v2；测试覆盖。旧预设不加 `page`，版式不变。
 - 旧 `settings.json`/`custom.css` 迁移保留。
-- `engine: electron` 兼容映射；不再有 Host Electron 打印路径。
+- `engine: electron` 兼容映射为 `auto`；不再有 Host Electron 打印路径。
 - 现有 `/md2pdf/export` 请求与响应保持；新增字段向后兼容。
-- `md2pdf_export` 工具参数保持 `path` 必填；新增可选 `preset`、`page`；结果新增 `engine`、`preset`、`page`。
+- `md2pdf_export` 工具参数只有 `path`；结果含 `engine`，不含 `preset`、`page`。
 - 客户端能力检查兼容没有 `window.dshDesktop` 的 Web GUI。
 - `docs/DESIGN.md`、`README.md`、`AGENTS.md` 在实现后同步；`AGENTS.md` 只留目标、架构、指针与禁止行为。
 
@@ -605,7 +636,8 @@ document.fonts.check('16px "Family"', 'A')
 - PDF 写盘：`%PDF-`/`%%EOF`、临时文件、改名、Windows 占用模拟、符号链接目标、旧文件保留。
 - 预设 v2：迁移、导入导出、重名、历史、恢复。
 - 浏览器回退：现有 `awaitPdf` 用例继续。
-- 渲染器：标题 slug、分页指令、front matter 过滤、页眉页脚变量转义。
+- 渲染器：标题 slug、目录、分页指令、论文模板字段、front matter 过滤。
+- 打印参数：页眉页脚模板与变量转义、未配置一侧的不可见模板（`<span></span>`）、居中页码、默认页脚、大纲开关、边距透传。
 
 ### 手动 spike
 
@@ -728,6 +760,10 @@ $DSH_HOME/md2pdf/
 `presets.json` 是权威；数组顺序即卡片顺序；写入先 CSS 后索引；索引写 `.tmp` 再改名。
 
 标识匹配 `^[a-z0-9-]{1,64}$`；单个样式上限 512 KiB；索引损坏改名 `.corrupt` 后重建；删除选中项后选第一项，删空只重建默认。
+
+导出包是版本 2 的 JSON：`{ version, selected, presets: [{ id, name, description?, page?, css }] }`，不含任何路径。导入先在内存中校验全部条目（标识、名称、样式上限、页面字段、重复标识），再按「先 CSS 后索引」写入。同名预设默认跳过并在 `warnings` 中报告；确认覆盖后替换样式、页面与描述，保留已有名称。
+
+历史写在 `history/<id>/<时间戳>-<随机>.css`，保存与恢复前各记录一次；每个预设保留最近 20 份，列表按时间戳倒序。恢复先记录当前样式，再写入快照，所以恢复本身可撤销。
 
 ### 渲染
 

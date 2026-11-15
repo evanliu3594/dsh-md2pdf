@@ -12,9 +12,10 @@ import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+import { PAPER_FIELDS } from './document-config.js'
 import { buildHtml, DEFAULT_PAGE } from './document.js'
 import { loadMathRenderer } from './math.js'
-import { renderFrontmatter, renderMarkdown, splitFrontmatter } from './markdown.js'
+import { addHeadingIds, renderFrontmatter, renderMarkdown, splitFrontmatter, tocHtml } from './markdown.js'
 import { run, which } from './proc.js'
 
 /**
@@ -59,6 +60,91 @@ export function normalizePandocFragment(html) {
   return html
     .replace(/<colgroup>[\s\S]*?<\/colgroup>\s*/gi, '')
     .replace(/(<table[^>]*?)\s+style\s*=\s*("[^"]*"|'[^']*')/gi, '$1')
+}
+
+/**
+ * Replace a standalone page-break comment with the break element.
+ *
+ * The built-in renderer emits the element itself; pandoc passes the raw HTML
+ * comment through. Only a whole line is a directive: an inline comment and a
+ * comment inside preformatted content stay literal, so a code sample never
+ * turns into a page break.
+ * @param html - a rendered document body.
+ * @returns the body with standalone page-break comments replaced.
+ */
+export function normalizePageBreaks(html) {
+  const held = []
+  const protectedText = String(html).replace(/<(pre|code)\b[\s\S]*?<\/\1\s*>/gi, (match) => {
+    held.push(match)
+    return '\u0000' + (held.length - 1) + '\u0000'
+  })
+  const replaced = protectedText.replace(
+    /^[ \t]*<!--[ \t]*pagebreak[ \t]*-->[ \t]*$/gmi,
+    '<div class="md2pdf-pagebreak"></div>',
+  )
+  return replaced.replace(/\u0000(\d+)\u0000/g, (_match, index) => held[Number(index)] ?? '')
+}
+
+/**
+ * Escape one value for an HTML text node.
+ * @param value - raw text.
+ * @returns the escaped text.
+ */
+function escapeText(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+/** Paper-template field labels by document language. */
+const PAPER_LABELS = {
+  zh: { abstract: '摘要：', keywords: '关键词：' },
+  en: { abstract: 'Abstract: ', keywords: 'Keywords: ' },
+}
+
+/**
+ * Render the paper template's own fields.
+ *
+ * These fields describe one paper, so they belong to the built-in paper
+ * template only; a custom preset lays its document out with its own CSS. The
+ * block is ordinary escaped text. There is no separate cover page: the block
+ * is the first content of the body page.
+ * @param paper - `pdf.paper.*` fields.
+ * @param options - the document language.
+ * @returns the paper block, empty when no field is set.
+ */
+export function renderPaperBlock(paper, options = {}) {
+  if (paper === null || typeof paper !== 'object') return ''
+  const fields = {}
+  for (const key of PAPER_FIELDS) {
+    const value = paper[key]
+    if (typeof value === 'string' && value.trim() !== '') fields[key] = value.trim()
+  }
+  if (Object.keys(fields).length === 0) return ''
+  // The TOC and the paper labels share one rule: Chinese for zh, English for
+  // every other language, so a third language never mixes the two.
+  const lang = typeof options.lang === 'string' && options.lang !== ''
+    ? options.lang.toLowerCase()
+    : 'zh-cn'
+  const labels = lang.startsWith('zh') ? PAPER_LABELS.zh : PAPER_LABELS.en
+  const rows = []
+  if (fields.title !== undefined) rows.push(`<p class="md2pdf-paper-title">${escapeText(fields.title)}</p>`)
+  if (fields.authors !== undefined) rows.push(`<p class="md2pdf-paper-authors">${escapeText(fields.authors)}</p>`)
+  if (fields.affiliations !== undefined) {
+    rows.push(`<p class="md2pdf-paper-affiliations">${escapeText(fields.affiliations)}</p>`)
+  }
+  if (fields.date !== undefined) rows.push(`<p class="md2pdf-paper-date">${escapeText(fields.date)}</p>`)
+  if (fields.abstract !== undefined) {
+    rows.push(`<p class="md2pdf-paper-abstract"><span class="md2pdf-paper-label">`
+      + `${escapeText(labels.abstract)}</span>${escapeText(fields.abstract)}</p>`)
+  }
+  if (fields.keywords !== undefined) {
+    rows.push(`<p class="md2pdf-paper-keywords"><span class="md2pdf-paper-label">`
+      + `${escapeText(labels.keywords)}</span>${escapeText(fields.keywords)}</p>`)
+  }
+  return `<section class="md2pdf-paper">\n${rows.join('\n')}\n</section>`
 }
 
 /**
@@ -109,7 +195,8 @@ async function pandocBody(markdown, pandoc, timeoutMs) {
  * The built-in renderer is the default: every install then produces the same
  * paper, with no dependence on a tool the machine happens to have. pandoc and
  * Temml are opt-in refinements, and their absence changes nothing else.
- * @param input - markdown text, title, base URL, page geometry, and user CSS.
+ * @param input - markdown text, title, base URL, page geometry, page override
+ *   CSS, and user CSS.
  * @param options - renderer choice and pandoc discovery overrides.
  * @returns the HTML document, the generator that produced its body, and the
  *   typesetter used for TeX.
@@ -137,21 +224,34 @@ export async function renderDocument(input, options = {}) {
   if (bodyHtml === null) {
     const mathRenderer = await loadMathRenderer()
     math = mathRenderer !== null
+    // The built-in renderer assigns ids itself; the shared pass below keeps the
+    // pandoc and built-in bodies on one anchor scheme.
     bodyHtml = renderMarkdown(body, math ? { math: mathRenderer } : {}).body
   }
+
+  const identified = addHeadingIds(normalizePageBreaks(bodyHtml))
+  const theme = input.theme ?? 'default'
+  // The TOC is built from the same ids the body carries, so every link resolves
+  // in the PDF viewer. The paper block belongs to the built-in paper template.
+  const toc = input.toc === true ? tocHtml(identified.headings, { lang: input.lang }) : ''
+  const paper = theme === 'paper' ? renderPaperBlock(input.paper, { lang: input.lang }) : ''
 
   return {
     generator,
     math,
-    theme: input.theme ?? 'default',
+    theme,
     html: buildHtml({
       title: input.title,
       lang: input.lang,
       baseHref: input.baseHref,
       frontmatter: renderFrontmatter(frontmatter),
-      body: bodyHtml,
+      paper,
+      toc,
+      body: identified.html,
+      bodyAfterToc: toc !== '',
       themeCss: input.themeCss,
       customCss: input.customCss,
+      pageCss: input.pageCss,
     }, page),
   }
 }

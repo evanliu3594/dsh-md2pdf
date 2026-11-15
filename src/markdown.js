@@ -127,24 +127,220 @@ export function splitFrontmatter(source) {
 }
 
 /**
+ * Parse a leading frontmatter block into flat fields.
+ *
+ * v2 uses flat keys only, so one `key: value` line is one field. An indented
+ * line starts a nested structure and is ignored rather than misread; a line
+ * without a colon carries no field. Quotes around a value are removed. Values
+ * stay text because the document-config parser decides whether a field is a
+ * boolean, a number, or ordinary text.
+ * @param source - YAML between the fences, or null.
+ * @returns the flat fields in source order.
+ */
+export function parseFrontmatter(source) {
+  const fields = {}
+  if (typeof source !== 'string') return fields
+  for (const raw of source.split('\n')) {
+    if (raw.trim() === '' || /^\s/.test(raw)) continue
+    const separator = raw.indexOf(':')
+    if (separator <= 0) continue
+    const key = raw.slice(0, separator).trim()
+    if (key === '') continue
+    fields[key] = raw.slice(separator + 1).trim().replace(/^['"]|['"]$/g, '')
+  }
+  return fields
+}
+
+/**
  * Render frontmatter as a two-column field list.
+ *
+ * Flat `pdf.*` keys configure the export rather than describe the document, so
+ * they stay out of the visible field table. Ordinary keys such as `title`,
+ * `author`, `date` and `tags` still render.
  * @param source - YAML between the fences, or null.
  * @returns the block markup, empty when the block has no fields.
  */
 export function renderFrontmatter(source) {
   if (source === null) return ''
   const rows = []
-  for (const raw of source.split('\n')) {
-    if (raw.trim() === '' || /^\s/.test(raw)) continue
-    const separator = raw.indexOf(':')
-    if (separator <= 0) continue
-    const key = raw.slice(0, separator).trim()
-    const value = raw.slice(separator + 1).trim().replace(/^['"]|['"]$/g, '')
-    if (key === '') continue
+  for (const [key, value] of Object.entries(parseFrontmatter(source))) {
+    // pdf.* keys configure the export; lang picks the TOC and paper labels.
+    // Neither describes the document content.
+    if (key.startsWith('pdf.') || key === 'lang') continue
     rows.push(`<tr><th>${escapeHtml(key)}</th><td>${escapeHtml(value)}</td></tr>`)
   }
   if (rows.length === 0) return ''
   return `<table class="frontmatter"><tbody>${rows.join('')}</tbody></table>`
+}
+
+/** Named HTML entities decoded before a heading becomes a slug and TOC label. */
+const NAMED_ENTITIES = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ',
+  copy: '©', reg: '®', trade: '™', hellip: '…', mdash: '—', ndash: '–',
+  lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”', times: '×', divide: '÷',
+  deg: '°', plusmn: '±', micro: 'µ', middot: '·', bull: '•', dagger: '†',
+  laquo: '«', raquo: '»', euro: '€', pound: '£', yen: '¥', cent: '¢',
+  sect: '§', para: '¶', eacute: 'é', egrave: 'è', agrave: 'à', ccedil: 'ç',
+  uuml: 'ü', ouml: 'ö', auml: 'ä', szlig: 'ß', aacute: 'á', iacute: 'í',
+  oacute: 'ó', uacute: 'ú', ntilde: 'ñ', Aacute: 'Á', Eacute: 'É', Iacute: 'Í',
+  Oacute: 'Ó', Uacute: 'Ú', Ntilde: 'Ñ',
+  alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', epsilon: 'ε', zeta: 'ζ',
+  eta: 'η', theta: 'θ', iota: 'ι', kappa: 'κ', lambda: 'λ', mu: 'μ', nu: 'ν',
+  xi: 'ξ', omicron: 'ο', pi: 'π', rho: 'ρ', sigma: 'σ', tau: 'τ', upsilon: 'υ',
+  phi: 'φ', chi: 'χ', psi: 'ψ', omega: 'ω',
+  Alpha: 'Α', Beta: 'Β', Gamma: 'Γ', Delta: 'Δ', Theta: 'Θ', Lambda: 'Λ',
+  Mu: 'Μ', Pi: 'Π', Sigma: 'Σ', Phi: 'Φ', Psi: 'Ψ', Omega: 'Ω',
+}
+
+/**
+ * Decode the HTML entities a heading may contain.
+ *
+ * Numeric references are decoded generally; the named table covers the
+ * ordinary typography a document uses. An unknown name stays literal, exactly
+ * as a browser shows an invalid reference.
+ * @param text - text with entities.
+ * @returns the decoded text.
+ */
+function decodeEntities(text) {
+  return text.replace(/&(#[0-9]+|#x[0-9a-f]+|[a-z][a-z0-9]*);/gi, (match, body) => {
+    if (body.startsWith('#')) {
+      const hex = body[1] === 'x' || body[1] === 'X'
+      const code = hex ? Number.parseInt(body.slice(2), 16) : Number.parseInt(body.slice(1), 10)
+      if (!Number.isFinite(code) || code <= 0 || code > 0x10ffff) return match
+      try {
+        return String.fromCodePoint(code)
+      } catch {
+        return match
+      }
+    }
+    return NAMED_ENTITIES[body] ?? match
+  })
+}
+
+/**
+ * Read the visible text of one rendered inline fragment.
+ *
+ * MathML annotations, pandoc footnote references, and the built-in footnote
+ * superscripts are removed, because they are metadata rather than visible
+ * heading text. Tags are then stripped and entities decoded.
+ * @param html - rendered inline markup.
+ * @returns the visible text.
+ */
+function plainTextOf(html) {
+  return decodeEntities(String(html)
+    .replace(/<annotation\b[^>]*>[\s\S]*?<\/annotation\s*>/gi, '')
+    .replace(/<a\b[^>]*class="[^"]*footnote-ref[^"]*"[^>]*>[\s\S]*?<\/a\s*>/gi, '')
+    .replace(/<sup class="footnote-ref"[\s\S]*?<\/sup>/gi, '')
+    // A comment is invisible, so its protected placeholder must not join the
+    // visible text. This also covers an inline comment inside a heading.
+    .replace(/\u0000\d+\u0000/g, '')
+    .replace(/<[^>]*>/g, ''))
+}
+
+/**
+ * Build the anchor slug for one heading.
+ *
+ * Unicode letters and digits stay, so a Chinese heading keeps a readable
+ * anchor. Latin text is lower-cased, whitespace and punctuation collapse to a
+ * single hyphen, and a heading with no letters falls back to the literal
+ * \`section\`.
+ * @param text - the heading's visible text.
+ * @returns the slug, never empty.
+ */
+function slugOf(text) {
+  const slug = String(text)
+    .normalize('NFKC')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\u00a0]+/g, '-')
+    .replace(/[^\p{Letter}\p{Number}-]+/gu, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return slug === '' ? 'section' : slug
+}
+
+/** A rendered heading element; quoted attributes may contain a greater-than. */
+const HEADING_TAG = /<h([1-6])\b((?:[^>"']|"[^"]*"|'[^']*')*)>([\s\S]*?)<\/h\1\s*>/gi
+
+/**
+ * Remove one id attribute from a start tag's attribute text.
+ *
+ * Attributes are read as whole tokens, so an \`id\` substring inside another
+ * attribute's quoted value is not touched.
+ * @param attributes - attribute text after the tag name.
+ * @returns the attribute text without an id.
+ */
+function withoutIdAttribute(attributes) {
+  let result = ''
+  let last = 0
+  const pattern = /\s+([^\s=/>]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s>]+))?/g
+  for (const match of attributes.matchAll(pattern)) {
+    result += attributes.slice(last, match.index)
+    if (match[1].toLowerCase() !== 'id') result += match[0]
+    last = match.index + match[0].length
+  }
+  return result + attributes.slice(last)
+}
+
+/**
+ * Give every heading a stable id and report them in document order.
+ *
+ * The ids are the TOC's link targets and the PDF outline's anchors. An id the
+ * generator already wrote is replaced, so both generators share one scheme; a
+ * repeated slug gains \`-2\`, \`-3\` and so on until the id is unique. Headings
+ * inside an HTML comment are left alone: a commented-out section is not part of
+ * the visible document.
+ * @param html - a rendered document body.
+ * @returns the body with ids, and the headings in order.
+ */
+export function addHeadingIds(html) {
+  const comments = []
+  const protectedHtml = String(html ?? '').replace(/<!--[\s\S]*?-->/g, (match) => {
+    comments.push(match)
+    return '\u0000' + (comments.length - 1) + '\u0000'
+  })
+  const used = new Set()
+  const headings = []
+  const body = protectedHtml.replace(HEADING_TAG, (_match, level, attributes, inner) => {
+    const label = plainTextOf(inner).trim() || 'section'
+    const base = 'md2pdf-h-' + slugOf(label)
+    let id = base
+    let suffix = 1
+    while (used.has(id)) {
+      suffix += 1
+      id = base + '-' + suffix
+    }
+    used.add(id)
+    headings.push({ level: Number(level), id, label })
+    const rest = withoutIdAttribute(attributes)
+    return '<h' + level + ' id="' + id + '"' + rest + '>' + inner + '</h' + level + '>'
+  })
+  const restored = body.replace(/\u0000(\d+)\u0000/g, (_match, index) => comments[Number(index)] ?? '')
+  return { html: restored, headings }
+}
+
+/**
+ * Build the clickable table of contents.
+ *
+ * Only h1-h3 are listed; deeper headings still carry ids but stay out of the
+ * TOC. The list has no page numbers, because a second layout pass is what
+ * numbering needs and v2 does not do one. The title follows the document
+ * language.
+ * @param headings - headings reported by {@link addHeadingIds}.
+ * @param options - the document language.
+ * @returns the TOC block markup, empty without a listed heading.
+ */
+export function tocHtml(headings, options = {}) {
+  const items = Array.isArray(headings)
+    ? headings.filter(heading => heading.level >= 1 && heading.level <= 3)
+    : []
+  if (items.length === 0) return ''
+  const lang = typeof options.lang === 'string' && options.lang !== '' ? options.lang : 'zh-CN'
+  const title = lang.toLowerCase().startsWith('zh') ? '目录' : 'Contents'
+  const links = items.map(heading => `<li class="md2pdf-toc-level-${heading.level}">`
+    + `<a href="#${heading.id}">${escapeHtml(heading.label)}</a></li>`).join('\n')
+  return `<nav class="md2pdf-toc">\n<p class="md2pdf-toc-title">${escapeHtml(title)}</p>\n`
+    + `<ol>\n${links}\n</ol>\n</nav>`
 }
 
 /**
@@ -234,6 +430,10 @@ export function renderInline(text, ctx = createContext()) {
     return hold(`<code>${escapeHtml(body)}</code>`)
   })
 
+  // An HTML comment is invisible in CommonMark. Drop it before the inline
+  // passes so a comment inside a heading is not visible text either.
+  source = source.replace(/<!--[\s\S]*?-->/g, '')
+
   // A backslash escape protects the punctuation that follows it.
   source = source.replace(/\\([\\`*_{}[\]()#+\-.!|<>~$"'])/g, (_match, character) => hold(escapeHtml(character)))
 
@@ -304,6 +504,9 @@ function opensBlock(lines, index) {
   if (/^[ \t]{0,3}((\*[ \t]*){3,}|(-[ \t]*){3,}|(_[ \t]*){3,})$/.test(line)) return true
   if (/^[ \t]{0,3}>/.test(line)) return true
   if (/^[ \t]{0,3}\$\$/.test(line)) return true
+  // The directive is a block, so a paragraph ends before it even without a
+  // blank line, matching the pandoc path. An indented directive is code.
+  if (indentOf(line) < 4 && /^[ \t]{0,3}<!--[ \t]*pagebreak[ \t]*-->[ \t]*$/i.test(line)) return true
   if (LIST_MARKER.test(line)) return true
   if (line.includes('|') && index + 1 < lines.length && isDelimiterRow(lines[index + 1])) return true
   const tag = /^[ \t]{0,3}<([a-zA-Z][a-zA-Z0-9-]*)\b/.exec(line)
@@ -488,6 +691,15 @@ function renderBlocks(lines, ctx) {
     const afterTable = tableNotePending
     tableNotePending = false
 
+    // An explicit page break is the author's control over pagination. A line
+    // indented four columns is code, so the tab in front of a directive keeps
+    // it literal.
+    if (indentOf(line) < 4 && /^[ \t]{0,3}<!--[ \t]*pagebreak[ \t]*-->[ \t]*$/i.test(line)) {
+      output.push('<div class="md2pdf-pagebreak"></div>')
+      index += 1
+      continue
+    }
+
     // Fenced code: backticks or tildes, at least three.
     const fence = /^([ \t]*)(`{3,}|~{3,})[ \t]*([^`]*)$/.exec(line)
     if (fence !== null) {
@@ -651,7 +863,8 @@ function renderBlocks(lines, ctx) {
  * Render a Markdown document body.
  * @param source - the file text.
  * @param [options] - `math` renders one TeX fragment to markup.
- * @returns the frontmatter block markup and the document body markup.
+ * @returns the frontmatter block markup, the body markup with heading ids, and
+ *   the headings in document order.
  */
 export function renderMarkdown(source, options = {}) {
   const text = String(source).replace(/\r\n?/g, '\n')
@@ -659,8 +872,10 @@ export function renderMarkdown(source, options = {}) {
   const { notes, kept } = extractFootnotes(body.split('\n'))
   const ctx = createContext({ math: options.math, notes })
   const markup = renderBlocks(kept, ctx)
+  const assembled = addHeadingIds(markup + footnoteSection(ctx))
   return {
     frontmatter: renderFrontmatter(frontmatter),
-    body: markup + footnoteSection(ctx),
+    body: assembled.html,
+    headings: assembled.headings,
   }
 }

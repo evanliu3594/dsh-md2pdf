@@ -23,7 +23,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node scripts/render-check.mjs && node scripts/presets-check.mjs && node scripts/preview-check.mjs && node scripts/printer-check.mjs",
+    "test": "node scripts/render-check.mjs && node scripts/document-config-check.mjs && node scripts/print-options-check.mjs && node scripts/presets-check.mjs && node scripts/preview-check.mjs && node scripts/dsh-preview-check.mjs && node scripts/printer-check.mjs && node scripts/print-server-check.mjs && node scripts/print-jobs-check.mjs && node scripts/export-check.mjs && node scripts/after-export-check.mjs && node scripts/broker-check.mjs && node scripts/client-ui-check.mjs",
     "test:audit": "node scripts/list-audit.mjs",
     "diagnose": "node scripts/diagnose-lists.mjs",
     "export": "node scripts/export-cli.mjs"
@@ -76,6 +76,7 @@
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-ui-context-menu",
         "@deepseek-ai/dsh-client-ui-sidebar-documentpreview",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
         "@deepseek-ai/dsh-client-ui-settings"
       ]
     }
