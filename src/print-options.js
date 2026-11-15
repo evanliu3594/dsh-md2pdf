@@ -33,9 +33,39 @@ const PLACEHOLDER = /\{(page|total|title|author|date)\}/g
 /** Inline template font; no external resource is loaded in the print margin. */
 const TEMPLATE_FONT = "font-family:'Songti SC',SimSun,'Times New Roman',serif;font-size:9px;color:#333;"
 
-/** Shared template wrapper: full print width, inline font, fixed alignment. */
-function templateOf(text, context, alignment) {
-  return '<div style="width:100%;' + TEMPLATE_FONT + 'text-align:' + alignment + ';">'
+/** Millimetres in one inch, for the template padding. */
+const MM_PER_INCH = 25.4
+
+/**
+ * Read one margin side as template padding in millimetres.
+ * @param value - a margin in inches.
+ * @returns the millimetres, rounded to two decimals, or null when unusable.
+ */
+function paddingMm(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null
+  return Math.round(value * MM_PER_INCH * 100) / 100
+}
+
+/**
+ * Build the shared header/footer wrapper.
+ *
+ * Chromium prints the template across the whole page width, so without
+ * horizontal padding a left-aligned header touches the paper edge. The padding
+ * takes the page's left and right margins, and the border-box keeps a centered
+ * footer centered on the text area rather than shifted by the padding.
+ * @param text - template text.
+ * @param context - title, author, and date values.
+ * @param alignment - left or center.
+ * @param margins - four print margins in inches, optional.
+ * @returns the template HTML.
+ */
+function templateOf(text, context, alignment, margins) {
+  const left = paddingMm(margins?.left)
+  const right = paddingMm(margins?.right)
+  const padding = left === null || right === null
+    ? ''
+    : 'box-sizing:border-box;padding:0 ' + right + 'mm 0 ' + left + 'mm;'
+  return '<div style="width:100%;' + padding + TEMPLATE_FONT + 'text-align:' + alignment + ';">'
     + fillTemplate(text, context) + '</div>'
 }
 
@@ -103,10 +133,12 @@ function fillTemplate(text, context) {
  * Build the header template for one print.
  * @param text - header text from configuration.
  * @param context - title, author, and date values, all optional.
+ * @param margins - four print margins in inches, optional; the header is
+ *   indented to the text area when supplied.
  * @returns the Chromium header template.
  */
-export function renderHeaderTemplate(text, context = {}) {
-  return templateOf(String(text ?? ''), context, 'left')
+export function renderHeaderTemplate(text, context = {}, margins) {
+  return templateOf(String(text ?? ''), context, 'left', margins)
 }
 
 /**
@@ -116,10 +148,12 @@ export function renderHeaderTemplate(text, context = {}) {
  * cover page is exempt.
  * @param text - footer text from configuration.
  * @param context - title, author, and date values, all optional.
+ * @param margins - four print margins in inches, optional; the footer centers
+ *   on the text area when supplied.
  * @returns the Chromium footer template.
  */
-export function renderFooterTemplate(text, context = {}) {
-  return templateOf(String(text ?? ''), context, 'center')
+export function renderFooterTemplate(text, context = {}, margins) {
+  return templateOf(String(text ?? ''), context, 'center', margins)
 }
 
 /**
@@ -195,18 +229,22 @@ export function buildPrintOptions(config = {}, margins = {}, context = {}) {
   }
   const outline = source.outline ?? document.outline
   const displayHeaderFooter = pageNumbers || headerText !== '' || footer !== ''
+  const normalizedMargins = normalizeMargins(margins)
   const sideTemplate = (text, render) => {
     if (!displayHeaderFooter) return ''
-    return text === '' ? INERT_HEADER_FOOTER_TEMPLATE : render(text, templateContext)
+    return text === '' ? INERT_HEADER_FOOTER_TEMPLATE : render(text, templateContext, normalizedMargins)
   }
   return {
     printBackground: true,
     preferCSSPageSize: true,
-    margins: normalizeMargins(margins),
+    margins: normalizedMargins,
     displayHeaderFooter,
     headerTemplate: sideTemplate(headerText, renderHeaderTemplate),
     footerTemplate: sideTemplate(footer, renderFooterTemplate),
+    // Chromium builds the outline from the tagged-PDF structure tree; the
+    // outline flag alone is a no-op.
     generateDocumentOutline: outline !== false,
+    generateTaggedPDF: outline !== false,
     pageRanges: '',
   }
 }

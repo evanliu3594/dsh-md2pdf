@@ -370,6 +370,7 @@ Client 把 Host 返回的参数原样传给 `<webview>.printToPDF()`：
   headerTemplate: config.headerTemplate,
   footerTemplate: config.footerTemplate,
   generateDocumentOutline: config.outline,
+  generateTaggedPDF: config.outline,   // 大纲由 tagged 结构树生成
   pageRanges: '',
 }
 ```
@@ -386,7 +387,8 @@ Host 在 `src/print-options.js` 生成参数，Client 原样转发；参数只�
 - 页脚支持 `{page}`、`{total}`、`{title}`、`{author}`、`{date}`。`{date}` 取 front matter 的 `date`，没有时用 Host 本地当天。
 - 页眉支持同样五个变量；未识别的占位符保持字面文本，已识别但没有取值的变量渲染为空。
 - 模板内联字体与字号；不加载外部资源。
-- `generateDocumentOutline` 用标题生成书签；标题需要稳定 id 时由渲染器补 slug。
+- 模板按页面左右边距加水平内边距（`box-sizing:border-box`）：页眉文字与正文左边缘对齐，居中页脚按版心居中。
+- `generateDocumentOutline` 用标题生成书签；标题需要稳定 id 时由渲染器补 slug。Chromium 只在同时开启 `generateTaggedPDF` 时生成书签，两个参数都由 `outline` 开关控制。
 
 ### 落盘与校验
 

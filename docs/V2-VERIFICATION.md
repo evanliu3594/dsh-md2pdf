@@ -16,7 +16,7 @@ result line.
 |---|---|---|
 | render | 203/203 | 203/203 |
 | document config | 80/80 | 80/80 |
-| print options | 123/123 | 123/123 |
+| print options | 131/131 | 131/131 |
 | presets | 116/116 | 116/116 |
 | previews | 25/25 | 25/25 |
 | dsh preview | 70/70 | 70/70 |

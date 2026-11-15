@@ -87,6 +87,15 @@ try {
   expectIncludes('the footer spans the print area', centeredFooter, 'width:100%;')
   expectIncludes('the footer sets an inline font size', centeredFooter, 'font-size:9px')
   expectIncludes('the footer sets an inline font family', centeredFooter, 'font-family:')
+  const templateMargins = { top: 1.4567, bottom: 1.378, left: 1.1024, right: 1.0236 }
+  const paddedFooter = renderFooterTemplate('第 {page} 页 / 共 {total} 页', {}, templateMargins)
+  expectIncludes('the footer is indented to the text area', paddedFooter,
+    'box-sizing:border-box;padding:0 26mm 0 28mm;')
+  const paddedHeader = renderHeaderTemplate('内部资料', {}, templateMargins)
+  expectIncludes('the header is indented to the text area', paddedHeader,
+    'box-sizing:border-box;padding:0 26mm 0 28mm;')
+  expectEqual('a direct template without margins keeps full width',
+    renderHeaderTemplate('x').includes('padding:0'), false)
 
   const plainHeader = renderHeaderTemplate('内部资料')
   expectIncludes('the header keeps its text', plainHeader, '内部资料')
@@ -137,7 +146,7 @@ try {
 
   const bare = buildPrintOptions({}, margins)
   expectEqual('print option keys', Object.keys(bare).join(','),
-    'printBackground,preferCSSPageSize,margins,displayHeaderFooter,headerTemplate,footerTemplate,generateDocumentOutline,pageRanges')
+    'printBackground,preferCSSPageSize,margins,displayHeaderFooter,headerTemplate,footerTemplate,generateDocumentOutline,generateTaggedPDF,pageRanges')
   expectEqual('print background is on', bare.printBackground, true)
   expectEqual('css page size wins', bare.preferCSSPageSize, true)
   expectEqual('bare margins pass through', bare.margins.top, margins.top)
@@ -145,6 +154,7 @@ try {
   expectEqual('bare options carry an empty header', bare.headerTemplate, '')
   expectEqual('bare options carry an empty footer', bare.footerTemplate, '')
   expectEqual('the outline is on by default', bare.generateDocumentOutline, true)
+  expectEqual('the tagged structure is on by default', bare.generateTaggedPDF, true)
   expectEqual('no page range restriction', bare.pageRanges, '')
 
   const numbered = buildPrintOptions({ pageNumbers: true }, margins)
@@ -152,6 +162,8 @@ try {
   expectIncludes('the default footer is used', numbered.footerTemplate, '第 ')
   expectIncludes('the default footer counts pages', numbered.footerTemplate, '共 ')
   expectIncludes('the default footer centers its text', numbered.footerTemplate, 'text-align:center')
+  expectIncludes('the default footer uses the page margins', numbered.footerTemplate,
+    'padding:0 26mm 0 28mm;')
   expectIncludes('the default footer carries the page span', numbered.footerTemplate,
     '<span class="pageNumber"></span>')
   expectIncludes('the default footer carries the total span', numbered.footerTemplate,
@@ -202,6 +214,7 @@ try {
   const nested = buildPrintOptions({ document: { pageNumbers: true }, outline: false }, margins)
   expectEqual('a nested document config enables page numbers', nested.displayHeaderFooter, true)
   expectEqual('an outline false reaches the options', nested.generateDocumentOutline, false)
+  expectEqual('an outline false disables the tagged structure', nested.generateTaggedPDF, false)
 
   const nestedDocumentOutline = buildPrintOptions({ document: { pageNumbers: true, outline: false } }, margins)
   expectEqual('a document outline flag reaches the options',
@@ -266,6 +279,8 @@ try {
     defaultPrepared.printOptions.displayHeaderFooter, false)
   expectEqual('prepare turns the outline on by default',
     defaultPrepared.printOptions.generateDocumentOutline, true)
+  expectEqual('prepare turns the tagged structure on by default',
+    defaultPrepared.printOptions.generateTaggedPDF, true)
   expectEqual('prepare keeps four margins', Object.keys(defaultPrepared.printOptions.margins).join(','),
     'top,bottom,left,right')
   await finishExport({ finishToken: defaultPrepared.finishToken, pdfBytes: PDF }, options)
@@ -277,6 +292,7 @@ try {
 
   const rowOutline = await prepareExport({ path: plain }, { ...options, outline: false })
   expectEqual('a row outline default reaches prepare', rowOutline.printOptions.generateDocumentOutline, false)
+  expectEqual('a row outline default disables tagged output', rowOutline.printOptions.generateTaggedPDF, false)
   await finishExport({ finishToken: rowOutline.finishToken, pdfBytes: PDF }, options)
 
   // One configured side must not let Chromium fill the other side with its own
