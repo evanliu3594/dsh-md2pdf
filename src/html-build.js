@@ -125,7 +125,9 @@ export function renderPaperBlock(paper, options = {}) {
   if (Object.keys(fields).length === 0) return ''
   // The TOC and the paper labels share one rule: Chinese for zh, English for
   // every other language, so a third language never mixes the two.
-  const lang = typeof options.lang === 'string' ? options.lang.toLowerCase() : 'zh-cn'
+  const lang = typeof options.lang === 'string' && options.lang !== ''
+    ? options.lang.toLowerCase()
+    : 'zh-cn'
   const labels = lang.startsWith('zh') ? PAPER_LABELS.zh : PAPER_LABELS.en
   const rows = []
   if (fields.title !== undefined) rows.push(`<p class="md2pdf-paper-title">${escapeText(fields.title)}</p>`)

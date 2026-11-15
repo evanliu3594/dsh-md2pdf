@@ -14,7 +14,7 @@ result line.
 
 | Suite | Node 26.13.1 | Node 24.21.0 |
 |---|---|---|
-| render | 195/195 | 195/195 |
+| render | 203/203 | 203/203 |
 | document config | 80/80 | 80/80 |
 | print options | 123/123 | 123/123 |
 | presets | 116/116 | 116/116 |

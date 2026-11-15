@@ -263,9 +263,6 @@ expectTrue('toc starts a new page', /\.md2pdf-toc\s*\{[^}]*break-before: page/.t
 expectContains('the body follows the toc on a new page', tocDoc.html, '<div class="md2pdf-body">')
 const tocNav = /<nav class="md2pdf-toc">[\s\S]*?<\/nav>/.exec(tocDoc.html)?.[0] ?? ''
 expectTrue('the toc nav exists', tocNav !== '')
-// Page numbers inside the contents are absent by construction (no numbering is
-// rendered). The printed page is the manual S2 evidence; this assertion only
-// keeps a future numbering element out of the nav markup.
 expectTrue('toc precedes the body',
   tocDoc.html.indexOf('<p class="md2pdf-toc-title">') < tocDoc.html.indexOf('<h1 id="md2pdf-h-第一章"'))
 const plainDoc = await renderDocument({ markdown: '# A', title: 'T' })
@@ -356,6 +353,9 @@ expectContains('the document language reaches html', englishDoc.html, '<html lan
 expectContains('the english toc title is used', englishDoc.html, '<p class="md2pdf-toc-title">Contents</p>')
 
 // ---- Heading text, ids, and escaped markup ---------------------------------
+const caseEntities = addHeadingIds('<h2>&Aacute; &Alpha; &aacute; &AACUTE; &nosuch;</h2>')
+expectEqual('named entities match case exactly', caseEntities.headings[0].label,
+  'Á Α á &AACUTE; &nosuch;')
 const entityHeading = addHeadingIds('<h2>&copy; 2026</h2>')
 expectEqual('an entity heading label is decoded', entityHeading.headings[0].label, '© 2026')
 expectEqual('an entity heading id is built from the text', entityHeading.headings[0].id, 'md2pdf-h-2026')
@@ -397,6 +397,14 @@ expectEqual('an inline comment does not leak a placeholder',
 const commentOnly = addHeadingIds('<h2><!-- note --></h2>')
 expectEqual('a comment-only heading gets the fallback label', commentOnly.headings[0].label, 'section')
 expectEqual('a comment-only heading gets the fallback id', commentOnly.headings[0].id, 'md2pdf-h-section')
+expectContains('a raw heading keeps its comment', inlineComment.html, '<!-- note -->')
+expectContains('a comment-only heading keeps its comment', commentOnly.html, '<!-- note -->')
+expectEqual('a built-in inline comment is not visible', html('A <!-- note --> C'), '<p>A  C</p>')
+const builtinComment = renderMarkdown('# A <!-- note --> C').headings[0]
+expectEqual('a built-in heading comment is not in the label', builtinComment.label, 'A  C')
+expectEqual('a built-in heading comment is not in the id', builtinComment.id, 'md2pdf-h-a-c')
+expectEqual('a built-in comment-only heading falls back',
+  renderMarkdown('# <!-- note -->').headings[0].id, 'md2pdf-h-section')
 const tabParagraph = html('A\n\t<!-- pagebreak -->\nB')
 expectMissing('a tab-indented directive does not become a break', tabParagraph, '<div class="md2pdf-pagebreak">')
 expectMissing('a tab-indented directive does not open a code block', tabParagraph, '<pre><code>')
@@ -426,7 +434,7 @@ const ruleHasIndent = (css, selector) => {
   return end > at && /text-indent:\s*0/.test(css.slice(at, end))
 }
 for (const selector of ['.md2pdf-toc-title', '.md2pdf-paper-title', '.md2pdf-paper-authors',
-  '.md2pdf-paper-affiliations', '.md2pdf-paper-abstract', '.md2pdf-paper-keywords']) {
+  '.md2pdf-paper-affiliations', '.md2pdf-paper-date', '.md2pdf-paper-abstract', '.md2pdf-paper-keywords']) {
   expectTrue('the paper preset resets ' + selector, ruleHasIndent(paperSheet, selector))
 }
 expectTrue('the structural sheet resets toc items',

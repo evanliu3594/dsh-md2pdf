@@ -213,7 +213,7 @@ function decodeEntities(text) {
         return match
       }
     }
-    return NAMED_ENTITIES[body.toLowerCase()] ?? match
+    return NAMED_ENTITIES[body] ?? match
   })
 }
 
@@ -429,6 +429,10 @@ export function renderInline(text, ctx = createContext()) {
     const body = code.replace(/^ (.*) $/, '$1')
     return hold(`<code>${escapeHtml(body)}</code>`)
   })
+
+  // An HTML comment is invisible in CommonMark. Drop it before the inline
+  // passes so a comment inside a heading is not visible text either.
+  source = source.replace(/<!--[\s\S]*?-->/g, '')
 
   // A backslash escape protects the punctuation that follows it.
   source = source.replace(/\\([\\`*_{}[\]()#+\-.!|<>~$"'])/g, (_match, character) => hold(escapeHtml(character)))
