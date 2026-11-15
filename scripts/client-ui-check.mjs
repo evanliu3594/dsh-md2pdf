@@ -76,6 +76,21 @@ const bilingual = [
   'settings.lastErrorNone',
   'settings.homePath',
   'settings.testPath',
+  'settings.exportPresets',
+  'settings.importPresets',
+  'settings.historyPresets',
+  'settings.bundleExported',
+  'settings.bundleExportFailed',
+  'settings.bundleImported',
+  'settings.bundleImportFailed',
+  'settings.bundleInvalid',
+  'settings.bundleOverwriteTitle',
+  'settings.bundleOverwriteBody',
+  'settings.historyEmpty',
+  'settings.historyRestore',
+  'settings.historyRestored',
+  'settings.historyFailed',
+  'settings.historyLoadFailed',
 ]
 for (const key of bilingual) {
   expectCount('both dictionaries define ' + key, client, "'" + key + "'", 2)
@@ -88,6 +103,10 @@ for (const action of [
   'save-document',
   'reset-document',
   'copy-diagnostics',
+  'export-presets',
+  'import-presets',
+  'history',
+  'restore-history',
 ]) {
   expectTrue('the settings action ' + action + ' exists',
     client.includes("'data-md2pdf-action': '" + action + "'"))
@@ -160,6 +179,17 @@ expectTrue('the diagnostics block is styled', client.includes('.md2pdf-diagnosti
 
 // The client stays a classic script with no Node or DSH package imports.
 expectTrue('the client imports no Node module', !client.includes("require('node:"))
+// Preset bundles and history stay Host-mediated; the client never sends a path.
+expectTrue('the client exports a bundle', client.includes("action: 'export-bundle'"))
+expectTrue('the client imports a bundle', client.includes("action: 'import-bundle'"))
+expectTrue('the client lists preset history', client.includes("action: 'list-history'"))
+expectTrue('the client restores a snapshot', client.includes("action: 'restore-history'"))
+expectTrue('the client downloads the bundle as a blob', client.includes('URL.createObjectURL'))
+expectTrue('the client reads an imported file', client.includes('await file.text()'))
+expectTrue('the import asks before overwriting', client.includes("kind: 'import-overwrite'"))
+expectTrue('the import input is hidden', client.includes("'data-md2pdf': 'import-file'"))
+expectTrue('the history panel is addressable', client.includes("'data-md2pdf': 'history-panel'"))
+
 expectTrue('the client imports no DSH client package', !client.includes("require('@deepseek-ai/"))
 
 expectTrue('the test chain runs this check',

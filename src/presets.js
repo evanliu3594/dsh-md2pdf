@@ -17,7 +17,8 @@
  * A version 1 index is rewritten as version 2 on its first read; its
  * stylesheets are not touched.
  */
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { validatePageOverride } from './document-config.js'
@@ -30,6 +31,12 @@ export const PRESET_INDEX_VERSION = 2
 
 /** Identifiers safe to place in a file name. */
 const PRESET_ID = /^[a-z0-9-]{1,64}$/
+
+/** History snapshots kept per preset. */
+const HISTORY_LIMIT = 20
+
+/** One history file name: a millisecond stamp and random bytes. */
+const HISTORY_NAME = /^[0-9]+-[a-f0-9]{8}\.css$/
 
 /**
  * The directory holding one stylesheet per preset.
@@ -411,6 +418,7 @@ async function savePresetLocked(input) {
 
   const created = targetId === undefined
   if (created) targetId = newPresetId()
+  else await recordPresetHistory(targetId, await readPresetCss(targetId))
 
   await writePresetCss(targetId, css)
   const presets = created
@@ -578,6 +586,241 @@ async function restoreBuiltinsLocked() {
   return { presets: restored.map(({ id, name }) => ({ id, name })) }
 }
 
+/**
+ * The history directory of one preset.
+ * @param id - preset identifier.
+ * @returns an absolute directory path.
+ * @throws {PdfError} when the identifier could escape the plugin directory.
+ */
+function historyDirectory(id) {
+  if (typeof id !== 'string' || !PRESET_ID.test(id)) {
+    throw new PdfError('bad-request', 'invalid preset id: ' + String(id))
+  }
+  return join(settingsDirectory(), 'history', id)
+}
+
+/**
+ * Keep at most the newest history snapshots.
+ * @param directory - one preset's history directory.
+ */
+async function prunePresetHistory(directory) {
+  let names
+  try {
+    names = await readdir(directory)
+  } catch {
+    return
+  }
+  const entries = []
+  for (const name of names) {
+    if (!HISTORY_NAME.test(name)) continue
+    const info = await stat(join(directory, name)).catch(() => null)
+    if (info !== null) entries.push({ name, stamp: Number(name.slice(0, name.indexOf('-'))), at: info.mtimeMs })
+  }
+  entries.sort((left, right) => right.stamp - left.stamp || right.at - left.at)
+  for (const entry of entries.slice(HISTORY_LIMIT)) {
+    await rm(join(directory, entry.name), { force: true }).catch(() => {})
+  }
+}
+
+/**
+ * Record one snapshot of a preset's previous stylesheet.
+ *
+ * History is written before the preset changes, so the entry is the state the
+ * user is leaving. An empty stylesheet is not recorded: it is the absence of a
+ * stylesheet, not a version.
+ * @param id - preset identifier.
+ * @param css - the stylesheet being replaced.
+ */
+async function recordPresetHistory(id, css) {
+  if (typeof css !== 'string' || css === '') return
+  const directory = historyDirectory(id)
+  await mkdir(directory, { recursive: true })
+  const name = String(Date.now()) + '-' + randomBytes(4).toString('hex') + '.css'
+  await writeFile(join(directory, name), css, 'utf8')
+  await prunePresetHistory(directory)
+}
+
+/**
+ * List one preset's history, newest first.
+ * @param id - preset identifier.
+ * @returns one entry per snapshot, with its file name and save time.
+ * @throws {PdfError} for an invalid or unknown preset.
+ */
+export async function listPresetHistory(id) {
+  const directory = historyDirectory(id)
+  const index = await ensurePresets()
+  if (!index.presets.some(preset => preset.id === id)) {
+    throw new PdfError('not-found', 'unknown preset: ' + String(id))
+  }
+  let names
+  try {
+    names = await readdir(directory)
+  } catch {
+    return []
+  }
+  const entries = []
+  for (const name of names) {
+    if (!HISTORY_NAME.test(name)) continue
+    const info = await stat(join(directory, name)).catch(() => null)
+    if (info === null) continue
+    const stamp = Number(name.slice(0, name.indexOf('-')))
+    entries.push({
+      name,
+      stamp,
+      at: info.mtimeMs,
+      savedAt: new Date(stamp).toISOString(),
+    })
+  }
+  entries.sort((left, right) => right.stamp - left.stamp || right.at - left.at)
+  return entries.map(({ name, savedAt }) => ({ name, savedAt }))
+}
+
+/**
+ * Restore one history snapshot.
+ *
+ * The snapshot becomes the preset's current stylesheet. The stylesheet it
+ * replaces is recorded first, so a restore is itself reversible.
+ * @param id - preset identifier.
+ * @param name - a history file name returned by listPresetHistory.
+ * @returns the restored preset identifier and stylesheet.
+ * @throws {PdfError} for an invalid or unknown identifier, name, or snapshot.
+ */
+export async function restorePresetHistory(id, name) {
+  if (typeof name !== 'string' || !HISTORY_NAME.test(name)) {
+    throw new PdfError('bad-request', 'invalid history name: ' + String(name))
+  }
+  const directory = historyDirectory(id)
+  const index = await ensurePresets()
+  if (!index.presets.some(preset => preset.id === id)) {
+    throw new PdfError('not-found', 'unknown preset: ' + String(id))
+  }
+  let css
+  try {
+    css = await readFile(join(directory, name), 'utf8')
+  } catch {
+    throw new PdfError('not-found', 'unknown history entry: ' + name)
+  }
+  return withIndexTransaction(async () => {
+    const current = await readOrSeedIndex()
+    if (!current.presets.some(preset => preset.id === id)) {
+      throw new PdfError('not-found', 'unknown preset: ' + String(id))
+    }
+    await recordPresetHistory(id, await readPresetCss(id))
+    await writePresetCss(id, css)
+    return { id, css }
+  })
+}
+
+/**
+ * Read one bundle entry as a validated preset.
+ * @param entry - one bundle preset.
+ * @param seen - identifiers already present in the bundle.
+ * @returns the normalized entry.
+ * @throws {PdfError} for an invalid identifier, name, stylesheet, or page.
+ */
+function bundleEntry(entry, seen) {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    throw new PdfError('bad-request', 'every bundle preset must be an object')
+  }
+  if (typeof entry.id !== 'string' || !PRESET_ID.test(entry.id)) {
+    throw new PdfError('bad-request', 'invalid preset id: ' + String(entry.id))
+  }
+  if (seen.has(entry.id)) throw new PdfError('bad-request', 'duplicate preset id: ' + entry.id)
+  seen.add(entry.id)
+  const name = typeof entry.name === 'string' ? entry.name.trim() : ''
+  if (name === '') throw new PdfError('bad-request', 'preset name is required: ' + entry.id)
+  if (typeof entry.css !== 'string') throw new PdfError('bad-request', 'stylesheet is required: ' + entry.id)
+  if (Buffer.byteLength(entry.css, 'utf8') > MAX_CSS_BYTES) {
+    throw new PdfError('too-large', 'stylesheet exceeds ' + MAX_CSS_BYTES + ' bytes: ' + entry.id)
+  }
+  const normalized = { id: entry.id, name, css: entry.css }
+  if (typeof entry.description === 'string') normalized.description = entry.description
+  if (entry.page !== undefined && entry.page !== null) {
+    const page = validatePageOverride(entry.page, 'bundle.' + entry.id + '.page')
+    if (Object.keys(page).length > 0) normalized.page = page
+  }
+  return normalized
+}
+
+/**
+ * Export every preset as one JSON bundle.
+ *
+ * The bundle is data, not a route: it carries no path, so the settings page can
+ * download it as a Blob and import it on another machine.
+ * @returns the version, the selection, and one entry per preset.
+ */
+export async function exportPresetBundle() {
+  const index = await ensurePresets()
+  const presets = []
+  for (const entry of index.presets) {
+    const preset = { id: entry.id, name: entry.name, css: await readPresetCss(entry.id) }
+    if (entry.description !== undefined) preset.description = entry.description
+    if (entry.page !== undefined) preset.page = { ...entry.page }
+    presets.push(preset)
+  }
+  return { version: PRESET_INDEX_VERSION, selected: index.selected, presets }
+}
+
+/**
+ * Import one preset bundle.
+ *
+ * Every entry is validated before any write, so a bad entry leaves the library
+ * untouched. A preset that already exists is a conflict unless overwrite is
+ * true; a conflict is reported and that entry is skipped. An overwrite replaces
+ * the stylesheet, page, and description, and keeps the stored name. Stylesheets
+ * are written before the index, as everywhere else.
+ * @param bundle - the exported bundle.
+ * @param options.overwrite - whether existing presets may be replaced.
+ * @returns the imported identifiers and one warning per conflict.
+ * @throws {PdfError} for an invalid bundle.
+ */
+export async function importPresetBundle(bundle, options = {}) {
+  if (bundle === null || typeof bundle !== 'object' || Array.isArray(bundle)) {
+    throw new PdfError('bad-request', 'bundle must be an object')
+  }
+  if (bundle.version !== PRESET_INDEX_VERSION) {
+    throw new PdfError('bad-request', 'unsupported bundle version: ' + String(bundle.version))
+  }
+  if (!Array.isArray(bundle.presets)) throw new PdfError('bad-request', 'bundle.presets must be an array')
+  const seen = new Set()
+  const entries = bundle.presets.map(entry => bundleEntry(entry, seen))
+  const overwrite = options.overwrite === true
+  return withIndexTransaction(async () => {
+    const index = await readOrSeedIndex()
+    const presets = index.presets.map(preset => ({ ...preset }))
+    const imported = []
+    const warnings = []
+    for (const entry of entries) {
+      const position = presets.findIndex(preset => preset.id === entry.id)
+      if (position >= 0) {
+        if (!overwrite) {
+          warnings.push('preset exists: ' + entry.id)
+          continue
+        }
+        await writePresetCss(entry.id, entry.css)
+        const updated = { ...presets[position] }
+        if (entry.page !== undefined) updated.page = entry.page
+        else delete updated.page
+        if (entry.description !== undefined) updated.description = entry.description
+        presets[position] = updated
+        imported.push(entry.id)
+        continue
+      }
+      await writePresetCss(entry.id, entry.css)
+      const created = { id: entry.id, name: entry.name }
+      if (entry.description !== undefined) created.description = entry.description
+      if (entry.page !== undefined) created.page = entry.page
+      presets.push(created)
+      imported.push(entry.id)
+    }
+    if (imported.length > 0) {
+      const selected = presets.some(preset => preset.id === index.selected) ? index.selected : presets[0].id
+      await writeIndex({ ...index, selected, presets })
+    }
+    return { imported, warnings }
+  })
+}
+
 export { MAX_CSS_BYTES }
 
 /**
@@ -600,6 +843,14 @@ export async function runPresetAction(action) {
       return savePreset({ id: action.id, name: action.name, css: action.css, overwrite: action.overwrite })
     case 'save-page':
       return savePresetPage(action.id, action.page)
+    case 'export-bundle':
+      return exportPresetBundle()
+    case 'import-bundle':
+      return importPresetBundle(action.bundle, { overwrite: action.overwrite === true })
+    case 'list-history':
+      return { history: await listPresetHistory(action.id) }
+    case 'restore-history':
+      return restorePresetHistory(action.id, action.name)
     case 'order':
       return orderPresets(action.ids)
     case 'delete':

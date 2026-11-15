@@ -68,6 +68,9 @@ export const PREVIEWS_PATH = '/md2pdf/previews'
 /** Request bodies are small JSON objects; anything larger is hostile. */
 const MAX_BODY_BYTES = 1024 * 1024
 
+/** A preset bundle may carry several stylesheets; the route still bounds it. */
+const MAX_PRESET_BODY_BYTES = 4 * 1024 * 1024
+
 /** The PDF a client may return in one finish request. */
 const MAX_PDF_BYTES = 64 * 1024 * 1024
 
@@ -152,13 +155,13 @@ function refused(ctx, req, res) {
  * Collect a bounded request body as text.
  * @returns the body text, or null past the ceiling.
  */
-async function readBoundedBody(req) {
+async function readBoundedBody(req, maxBytes = MAX_BODY_BYTES) {
   const chunks = []
   let size = 0
   for await (const chunk of req) {
     const piece = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
     size += piece.byteLength
-    if (size > MAX_BODY_BYTES) {
+    if (size > maxBytes) {
       req.resume()
       return null
     }
@@ -471,7 +474,7 @@ export function apply(ctx, config) {
       }
       let text
       try {
-        text = await readBoundedBody(req)
+        text = await readBoundedBody(req, MAX_PRESET_BODY_BYTES)
       } catch {
         sendJson(res, 400, { ok: false, code: 'bad-request', message: 'request body unreadable' })
         return

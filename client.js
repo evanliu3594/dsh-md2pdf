@@ -221,6 +221,21 @@ window.__ModuleLoader__.load({
         'settings.orderFailed': 'Could not reorder: {message}',
         'settings.restored': 'Restored the built-in presets.',
         'settings.restoreFailed': 'Could not restore: {message}',
+        'settings.exportPresets': 'Export presets',
+        'settings.importPresets': 'Import presets',
+        'settings.historyPresets': 'History',
+        'settings.bundleExported': 'Preset bundle downloaded.',
+        'settings.bundleExportFailed': 'Could not export presets: {message}',
+        'settings.bundleImported': 'Imported {count} preset(s).',
+        'settings.bundleImportFailed': 'Could not import presets: {message}',
+        'settings.bundleInvalid': 'This file is not a preset bundle.',
+        'settings.bundleOverwriteTitle': 'Replace existing presets?',
+        'settings.bundleOverwriteBody': 'These presets already exist: {names}. Replace their stylesheet and page settings?',
+        'settings.historyEmpty': 'No history for this preset.',
+        'settings.historyRestore': 'Restore',
+        'settings.historyRestored': 'Restored the snapshot from {time}.',
+        'settings.historyFailed': 'Could not restore the snapshot: {message}',
+        'settings.historyLoadFailed': 'Could not read history: {message}',
         'settings.opened': 'Opened {path}.',
         'settings.openFailed': 'Could not open the file: {message}',
         'settings.loadFailed': 'Could not read the presets: {message}',
@@ -354,6 +369,21 @@ window.__ModuleLoader__.load({
         'settings.orderFailed': '排序失败：{message}',
         'settings.restored': '已补回内置预设。',
         'settings.restoreFailed': '恢复失败：{message}',
+        'settings.exportPresets': '导出预设',
+        'settings.importPresets': '导入预设',
+        'settings.historyPresets': '历史',
+        'settings.bundleExported': '预设包已下载。',
+        'settings.bundleExportFailed': '导出预设失败：{message}',
+        'settings.bundleImported': '已导入 {count} 个预设。',
+        'settings.bundleImportFailed': '导入预设失败：{message}',
+        'settings.bundleInvalid': '文件不是预设包。',
+        'settings.bundleOverwriteTitle': '替换同名预设？',
+        'settings.bundleOverwriteBody': '以下预设已存在：{names}。替换它们的样式与页面设置？',
+        'settings.historyEmpty': '当前预设没有历史记录。',
+        'settings.historyRestore': '恢复',
+        'settings.historyRestored': '已恢复到 {time} 的快照。',
+        'settings.historyFailed': '恢复快照失败：{message}',
+        'settings.historyLoadFailed': '读取历史失败：{message}',
         'settings.opened': '已打开 {path}。',
         'settings.openFailed': '打开文件失败：{message}',
         'settings.loadFailed': '读取预设失败：{message}',
@@ -1562,6 +1592,14 @@ window.__ModuleLoader__.load({
 .md2pdf-status[data-kind="ok"] { color: var(--dsw-alias-state-success-primary, #2f8f5b); }
 .md2pdf-status[data-kind="error"] { color: var(--dsw-alias-state-error-primary, #c0392b); }
 .md2pdf-path { margin: 0; font-family: ui-monospace, SFMono-Regular, Consolas, Menlo, monospace; font-size: 11px; color: var(--dsw-alias-label-secondary, #6b7280); word-break: break-all; }
+.md2pdf-history {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--dsw-alias-border-l2, #dfe4ea);
+}
 .md2pdf-diagnostics {
   margin: 0;
   padding: 10px 12px;
@@ -2182,6 +2220,11 @@ window.__ModuleLoader__.load({
           const [docDraft, setDocDraft] = React.useState(() => documentDraftOf(documentOverrides))
           const [docActive, setDocActive] = React.useState(documentOverridesActive)
           const [lastError, setLastError] = React.useState('')
+          const [history, setHistory] = React.useState([])
+          const [historyOpen, setHistoryOpen] = React.useState(false)
+          const [historyBusy, setHistoryBusy] = React.useState(false)
+          const [importBusy, setImportBusy] = React.useState(false)
+          const importInputRef = React.useRef(null)
 
           const nameOf = React.useCallback((id) => {
             const found = presets.find(preset => preset.id === id)
@@ -2527,6 +2570,116 @@ window.__ModuleLoader__.load({
             }
           }, [act, presets, load, loadPreviews, fail])
 
+          /** Download every preset as one JSON bundle. */
+          const exportPresets = React.useCallback(async () => {
+            setImportBusy(true)
+            try {
+              const payload = await act({ action: 'export-bundle' })
+              const text = JSON.stringify({
+                version: 2,
+                selected: payload.selected,
+                presets: payload.presets,
+              }, null, 2)
+              const blob = new Blob([text], { type: 'application/json' })
+              const url = URL.createObjectURL(blob)
+              const link = document.createElement('a')
+              link.href = url
+              link.download = 'dsh-md2pdf-presets.json'
+              link.click()
+              setTimeout(() => { URL.revokeObjectURL(url) }, 1000)
+              setStatus({ kind: 'ok', text: t('settings.bundleExported') })
+            } catch (error) {
+              fail('settings.bundleExportFailed', error)
+            } finally {
+              setImportBusy(false)
+            }
+          }, [act, fail])
+
+          /** Import one bundle after the user confirms replacing conflicts. */
+          const applyImport = React.useCallback(async (bundle, overwrite) => {
+            setImportBusy(true)
+            try {
+              const payload = await act({ action: 'import-bundle', bundle, overwrite })
+              await load()
+              await loadPreviews()
+              setDialog(null)
+              setStatus({
+                kind: 'ok',
+                text: t('settings.bundleImported', { count: String(payload.imported.length) }),
+              })
+            } catch (error) {
+              setDialog(null)
+              fail('settings.bundleImportFailed', error)
+            } finally {
+              setImportBusy(false)
+            }
+          }, [act, load, loadPreviews, fail])
+
+          /** Read a bundle file and import it without overwriting first. */
+          const importPresetFile = React.useCallback(async (event) => {
+            const file = event.target?.files?.[0]
+            if (file === undefined) return
+            event.target.value = ''
+            let bundle
+            try {
+              bundle = JSON.parse(await file.text())
+            } catch {
+              setStatus({ kind: 'error', text: t('settings.bundleInvalid') })
+              return
+            }
+            setImportBusy(true)
+            try {
+              const payload = await act({ action: 'import-bundle', bundle, overwrite: false })
+              await load()
+              await loadPreviews()
+              setStatus({
+                kind: 'ok',
+                text: t('settings.bundleImported', { count: String(payload.imported.length) }),
+              })
+              if (Array.isArray(payload.warnings) && payload.warnings.length > 0) {
+                setDialog({ kind: 'import-overwrite', bundle, warnings: payload.warnings })
+              }
+            } catch (error) {
+              fail('settings.bundleImportFailed', error)
+            } finally {
+              setImportBusy(false)
+            }
+          }, [act, load, loadPreviews, fail])
+
+          /** Load the selected preset's history snapshots. */
+          const openHistory = React.useCallback(async () => {
+            if (selected === '') return
+            setHistoryBusy(true)
+            try {
+              const payload = await act({ action: 'list-history', id: selected })
+              setHistory(Array.isArray(payload.history) ? payload.history : [])
+              setHistoryOpen(true)
+            } catch (error) {
+              fail('settings.historyLoadFailed', error)
+            } finally {
+              setHistoryBusy(false)
+            }
+          }, [act, selected, fail])
+
+          /** Restore one snapshot and refresh the editor and the list. */
+          const restoreSnapshot = React.useCallback(async (name, savedAt) => {
+            if (selected === '') return
+            setHistoryBusy(true)
+            try {
+              await act({ action: 'restore-history', id: selected, name })
+              await load()
+              await loadPreviews()
+              const time = String(savedAt ?? '').replace('T', ' ').slice(0, 16)
+              setStatus({ kind: 'ok', text: t('settings.historyRestored', { time }) })
+              const payload = await act({ action: 'list-history', id: selected })
+              setHistory(Array.isArray(payload.history) ? payload.history : [])
+            } catch (error) {
+              fail('settings.historyFailed', error)
+            } finally {
+              setHistoryBusy(false)
+            }
+          }, [act, selected, load, loadPreviews, fail])
+
           const restoreShipped = React.useCallback(async () => {
             setBusy(true)
             try {
@@ -2688,6 +2841,63 @@ window.__ModuleLoader__.load({
             }, h(TrashGlyph, null))))))
             rows.push(h('p', { key: 'current', className: 'md2pdf-hint' },
               t('settings.selected', { name: nameOf(selected) })))
+            rows.push(h('div', { key: 'preset-tools', className: 'md2pdf-row' },
+              h('button', {
+                type: 'button',
+                className: 'md2pdf-btn',
+                'data-md2pdf-action': 'export-presets',
+                disabled: busy || importBusy || phase === 'loading',
+                onClick: exportPresets,
+              }, t('settings.exportPresets')),
+              h('button', {
+                type: 'button',
+                className: 'md2pdf-btn',
+                'data-md2pdf-action': 'import-presets',
+                disabled: busy || importBusy || phase === 'loading',
+                onClick: () => {
+                  if (importInputRef.current !== null) importInputRef.current.click()
+                },
+              }, t('settings.importPresets')),
+              h('button', {
+                type: 'button',
+                className: 'md2pdf-btn',
+                'data-md2pdf-action': 'history',
+                disabled: busy || historyBusy || phase === 'loading' || selected === '',
+                onClick: openHistory,
+              }, t('settings.historyPresets')),
+              h('input', {
+                key: 'import-file',
+                ref: importInputRef,
+                type: 'file',
+                accept: 'application/json,.json',
+                style: { display: 'none' },
+                'data-md2pdf': 'import-file',
+                onChange: importPresetFile,
+              })))
+            if (historyOpen) {
+              rows.push(h('div', {
+                key: 'history-panel',
+                className: 'md2pdf-history',
+                'data-md2pdf': 'history-panel',
+              },
+              history.length === 0
+                ? h('p', { className: 'md2pdf-hint' }, t('settings.historyEmpty'))
+                : history.map(entry => h('div', {
+                  key: entry.name,
+                  className: 'md2pdf-row',
+                  'data-history': entry.name,
+                },
+                h('span', { className: 'md2pdf-path' },
+                  String(entry.savedAt).replace('T', ' ').slice(0, 16)),
+                h('button', {
+                  type: 'button',
+                  className: 'md2pdf-btn',
+                  'data-md2pdf-action': 'restore-history',
+                  'data-history': entry.name,
+                  disabled: historyBusy,
+                  onClick: () => { restoreSnapshot(entry.name, entry.savedAt) },
+                }, t('settings.historyRestore'))))))
+            }
           }
 
           rows.push(h('h3', { key: 'page-heading', className: 'md2pdf-heading' }, t('settings.pageHeading')))
@@ -3094,6 +3304,20 @@ window.__ModuleLoader__.load({
             'data-md2pdf': 'diagnostics',
           }, JSON.stringify(diagnostics, null, 2)))
 
+          if (dialog !== null && dialog.kind === 'import-overwrite') {
+            const names = Array.isArray(dialog.warnings)
+              ? dialog.warnings.map(warning => nameOf(String(warning).replace('preset exists: ', ''))).join(', ')
+              : ''
+            rows.push(h(Dialog, {
+              key: 'dialog-import',
+              title: t('settings.bundleOverwriteTitle'),
+              description: t('settings.bundleOverwriteBody', { names }),
+              cancelLabel: t('settings.cancel'),
+              submitLabel: t('settings.overwrite'),
+              onSubmit: () => { applyImport(dialog.bundle, true) },
+              onCancel: () => { setDialog(null) },
+            }))
+          }
           if (dialog !== null && dialog.kind === 'save') {
             rows.push(h(Dialog, {
               key: 'dialog-save',

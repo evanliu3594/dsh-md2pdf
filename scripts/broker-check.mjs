@@ -120,7 +120,7 @@ const { CLIENT_FAILURE_REASONS, createPrintJobs } = await import('../src/print-j
 const indexModule = await import('../index.js')
 
 const {
-  FAIL_JOB_PATH, NEXT_JOB_PATH, SETTINGS_PATH, TEST_PRINT_PATH, brokerWaitSeconds,
+  FAIL_JOB_PATH, NEXT_JOB_PATH, PRESETS_PATH, SETTINGS_PATH, TEST_PRINT_PATH, brokerWaitSeconds,
 } = indexModule
 
 /**
@@ -1175,6 +1175,31 @@ try {
     { finishToken: testOverride.payload.finishToken, pdfBytes: PDF },
     { jobs: testPrintJobs },
   )
+
+  // 6d. The preset route reaches the bundle and history actions, and its body
+  // ceiling fits a multi-preset bundle above the generic 1 MiB limit.
+  const presetRoutes = mountRoutes({ jobs: createPrintJobs() })
+  const bundleAnswer = await callRoute(presetRoutes, PRESETS_PATH,
+    fakeRequest('POST', PRESETS_PATH, '{"action":"export-bundle"}', { 'content-type': 'application/json' }))
+  expectEqual('the preset route exports a bundle', bundleAnswer.status, 200)
+  expectEqual('the bundle carries the library', Array.isArray(bundleAnswer.payload?.presets), true)
+  const importBody = JSON.stringify({
+    action: 'import-bundle',
+    bundle: { version: 2, presets: [{ id: 'route-a', name: 'Route A', css: 'body{color:red}' }] },
+  })
+  const importAnswer = await callRoute(presetRoutes, PRESETS_PATH,
+    fakeRequest('POST', PRESETS_PATH, importBody, { 'content-type': 'application/json' }))
+  expectEqual('the preset route imports a bundle', importAnswer.payload?.imported?.join(','), 'route-a')
+  const historyAnswer = await callRoute(presetRoutes, PRESETS_PATH,
+    fakeRequest('POST', PRESETS_PATH, '{"action":"list-history","id":"lark"}', { 'content-type': 'application/json' }))
+  expectEqual('the preset route lists history', Array.isArray(historyAnswer.payload?.history), true)
+  const large = [0, 1, 2].map(index => ({ id: 'large-' + index, name: 'Large ' + index, css: 'a'.repeat(480 * 1024) }))
+  const largeBody = JSON.stringify({ action: 'import-bundle', bundle: { version: 2, presets: large } })
+  expectEqual('a bundle body exceeds the generic limit', largeBody.length > 1024 * 1024, true)
+  const largeAnswer = await callRoute(presetRoutes, PRESETS_PATH,
+    fakeRequest('POST', PRESETS_PATH, largeBody, { 'content-type': 'application/json' }))
+  expectEqual('the preset route accepts a bundle body under its ceiling', largeAnswer.status, 200)
+  expectEqual('the large bundle imports every preset', largeAnswer.payload?.imported?.length, 3)
 
   const settingsRoutes = mountRoutes({ jobs: createPrintJobs() })
   const settingsAnswer = await callRoute(settingsRoutes, SETTINGS_PATH,

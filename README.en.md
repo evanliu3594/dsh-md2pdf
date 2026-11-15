@@ -116,6 +116,14 @@ A thumbnail is that preset's real rendering, scaled down, so colours, type scale
 
 The editor title names the preset being edited and adds an "unsaved" badge once you change something. Saving opens a name dialog prefilled with the current name; a name already used by another preset asks before replacing it, and a new name creates a preset. The toolbar also offers New, Reload, Move up and Move down, plus Restore built-in presets once one has been deleted.
 
+Three buttons sit under the preset cards:
+
+- Export presets downloads one JSON file with every preset's stylesheet, page settings and the current selection.
+- Import presets reads that file. New presets are added; an existing preset asks before its stylesheet and page settings are replaced.
+- History lists the last 20 stylesheets saved before a change for the current preset, and restores any snapshot. A snapshot is recorded before each save, and a restore records the stylesheet it replaces.
+
+The bundle holds stylesheet text and metadata only. It carries no path, so it moves between machines.
+
 The Open button beside the stylesheet path hands the current preset's CSS to your own editor. Save, then the next export uses it; no restart.
 
 The top of the page shows the active print engine, with Refresh and Test print beside it. A test print renders one sample page with a page-number footer and two headings, which checks both the printer and the page features. The Page section stores paper size, orientation, margins and body size on the current preset.

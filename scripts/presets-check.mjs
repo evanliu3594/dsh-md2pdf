@@ -42,6 +42,20 @@ function expectTrue(label, condition) {
   expectEqual(label, condition === true, true)
 }
 
+/**
+ * Run one call and return the error it throws.
+ * @param run - the call, or a promise of it, expected to refuse its input.
+ * @returns the thrown error, or null when the call returned.
+ */
+async function capture(run) {
+  try {
+    await (typeof run === 'function' ? run() : run)
+  } catch (error) {
+    return error
+  }
+  return null
+}
+
 try {
   const first = await listPresets()
   expectEqual('seeds three presets', first.presets.length, 3)
@@ -391,6 +405,105 @@ try {
   expectEqual('linux opener uses xdg-open', openCommandFor('linux').file, 'xdg-open')
   expectEqual('unknown platform has no opener', openCommandFor('aix'), null)
   await rm(actions, { recursive: true, force: true, maxRetries: 3 }).catch(() => {})
+
+  // Bundle export, import, and preset history.
+  const bundleHome = await mkdtemp(join(tmpdir(), 'dsh-md2pdf-bundle-'))
+  process.env['MD2PDF_HOME'] = bundleHome
+  const {
+    exportPresetBundle, importPresetBundle, listPresetHistory, restorePresetHistory, savePreset: saveBundlePreset,
+  } = await import('../src/presets.js')
+
+  const bundle = await exportPresetBundle()
+  expectEqual('a bundle carries three presets', bundle.presets.length, 3)
+  expectEqual('a bundle carries the selected id', bundle.selected, 'lark')
+  expectEqual('a bundle keeps the preset order', bundle.presets.map(preset => preset.id).join(','), 'lark,gongwen,paper')
+  expectTrue('a bundle carries css', bundle.presets.every(preset => typeof preset.css === 'string' && preset.css.length > 200))
+  expectEqual('a bundle is version 2', bundle.version, 2)
+
+  const importHome = await mkdtemp(join(tmpdir(), 'dsh-md2pdf-import-'))
+  process.env['MD2PDF_HOME'] = importHome
+  const customBundle = {
+    version: 2,
+    selected: 'custom-a',
+    presets: [
+      ...bundle.presets,
+      { id: 'custom-a', name: 'Custom A', css: 'body { color: red; }', page: { marginMm: 20 } },
+    ],
+  }
+  const imported = await importPresetBundle(customBundle)
+  expectEqual('import creates a new preset', imported.imported.join(','), 'custom-a')
+  expectEqual('import reports every existing preset', imported.warnings.length, 3)
+  const customRead = await readPreset('custom-a')
+  expectEqual('an imported css is stored', customRead.css, 'body { color: red; }')
+  expectEqual('an imported page is stored', customRead.page.marginMm, 20)
+  expectEqual('an imported preset is not builtin',
+    (await listPresets()).presets.find(preset => preset.id === 'custom-a').builtin, false)
+
+  const larkBefore = (await readPreset('lark')).css
+  const secondImport = await importPresetBundle(customBundle)
+  expectEqual('a second import imports nothing', secondImport.imported.length, 0)
+  expectEqual('a second import reports all conflicts', secondImport.warnings.length, 4)
+  expectEqual('a second import keeps the existing css', (await readPreset('lark')).css, larkBefore)
+
+  const overwritten = await importPresetBundle({
+    version: 2,
+    presets: [{ id: 'custom-a', name: 'Custom B', css: 'body { color: blue; }', page: { marginMm: 30 } }],
+  }, { overwrite: true })
+  expectEqual('overwrite imports the preset', overwritten.imported.join(','), 'custom-a')
+  const customOverwritten = await readPreset('custom-a')
+  expectEqual('overwrite replaces the css', customOverwritten.css, 'body { color: blue; }')
+  expectEqual('overwrite replaces the page', customOverwritten.page.marginMm, 30)
+  expectEqual('overwrite keeps the existing name', customOverwritten.name, 'Custom A')
+
+  expectEqual('a path-like id is refused',
+    (await capture(importPresetBundle({ version: 2, presets: [{ id: '../evil', name: 'x', css: '' }] })))?.code, 'bad-request')
+  expectEqual('an oversized css is refused',
+    (await capture(importPresetBundle({
+      version: 2,
+      presets: [{ id: 'big', name: 'x', css: 'a'.repeat(524289) }],
+    })))?.code, 'too-large')
+  expectEqual('an invalid page is refused',
+    (await capture(importPresetBundle({
+      version: 2,
+      presets: [{ id: 'bad-page', name: 'x', css: '', page: { size: 'B5' } }],
+    })))?.code, 'bad-request')
+  expectEqual('a foreign bundle version is refused',
+    (await capture(importPresetBundle({ version: 1, presets: [] })))?.code, 'bad-request')
+  expectEqual('a duplicate bundle id is refused',
+    (await capture(importPresetBundle({
+      version: 2,
+      presets: [
+        { id: 'dup', name: 'one', css: '' },
+        { id: 'dup', name: 'two', css: '' },
+      ],
+    })))?.code, 'bad-request')
+  await rm(importHome, { recursive: true, force: true, maxRetries: 3 }).catch(() => {})
+
+  const historyHome = await mkdtemp(join(tmpdir(), 'dsh-md2pdf-history-'))
+  process.env['MD2PDF_HOME'] = historyHome
+  await listPresets()
+  await saveBundlePreset({ id: 'lark', name: 'Lark', css: 'body { color: red; }' })
+  const history = await listPresetHistory('lark')
+  expectEqual('a save records one history entry', history.length, 1)
+  expectTrue('a history entry has a name', typeof history[0].name === 'string' && history[0].name !== '')
+  expectTrue('a history entry has a time', typeof history[0].savedAt === 'string')
+  const restoredHistory = await restorePresetHistory('lark', history[0].name)
+  expectEqual('restore returns the stored css', restoredHistory.css, themeCss('lark'))
+  expectEqual('restore writes the preset css', (await readPreset('lark')).css, themeCss('lark'))
+  const afterRestore = await listPresetHistory('lark')
+  expectEqual('restore records the replaced css', afterRestore.length, 2)
+  expectEqual('restore of an unknown entry is refused',
+    (await capture(restorePresetHistory('lark', '1700000000000-abcdef12.css')))?.code, 'not-found')
+  expectEqual('a path-like history name is refused',
+    (await capture(restorePresetHistory('lark', '../x')))?.code, 'bad-request')
+
+  for (let index = 0; index < 25; index += 1) {
+    await saveBundlePreset({ id: 'lark', name: 'Lark', css: 'body { color: rgb(' + index + ',0,0); }' })
+  }
+  const capped = await listPresetHistory('lark')
+  expectEqual('history keeps twenty entries', capped.length, 20)
+  expectTrue('history lists newest first', capped[0].savedAt >= capped[19].savedAt)
+  await rm(historyHome, { recursive: true, force: true, maxRetries: 3 }).catch(() => {})
 } finally {
   await rm(home, { recursive: true, force: true, maxRetries: 3 }).catch(() => {})
 }

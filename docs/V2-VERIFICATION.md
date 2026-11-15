@@ -17,7 +17,7 @@ result line.
 | render | 175/175 | 175/175 |
 | document config | 75/75 | 75/75 |
 | print options | 123/123 | 123/123 |
-| presets | 75/75 | 75/75 |
+| presets | 107/107 | 107/107 |
 | previews | 23/23 | 23/23 |
 | dsh preview | 70/70 | 70/70 |
 | printer | 5/5 | 5/5 |
@@ -25,8 +25,8 @@ result line.
 | print jobs | 80/80 | 80/80 |
 | export | 138/138 | 138/138 |
 | after export | 95/95 | 95/95 |
-| broker | 266/266 | 266/266 |
-| client UI | 77/77 | 77/77 |
+| broker | 273/273 | 273/273 |
+| client UI | 105/105 | 105/105 |
 
 `node scripts/list-audit.mjs` on both runtimes:
 `failures: builtin=0 markdown(old)=0 gfm+math=0`.
@@ -56,6 +56,15 @@ The accepted S1 macOS exception still applies: pages 1, 2 and 4 of the gongwen
 sample start at 32.68, 33.19 and 34.24 mm instead of 37 mm because of the Mac
 STFangsong Type3 glyph box. The user accepted the 3.8 mm deviation on
 2026-11-14. See `docs/S1-CHECKLIST.md`.
+
+## Manual S4: preset bundle and history
+
+| Case | Action | Expected | Result |
+|---|---|---|---|
+| S4-1 | Settings → Export presets | one JSON file downloads with every preset, its stylesheet, page metadata, and the selection | pending |
+| S4-2 | Import the file on another machine | presets appear; a conflicting preset asks before its stylesheet and page settings are replaced | pending |
+| S4-3 | Change a preset twice, open History | the last snapshots are listed newest first, at most 20 | pending |
+| S4-4 | Restore an older snapshot | the editor and the next export use that stylesheet; the replaced stylesheet is itself in the history | pending |
 
 ## Manual S3: agent print broker
 

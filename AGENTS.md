@@ -57,7 +57,9 @@
 
 卡片操作 → POST /md2pdf/presets { action }
   → runPresetAction()：read | select | save | order | delete | restore | open
+       | export-bundle | import-bundle | list-history | restore-history
   → presets.js 写 CSS 文件，再写 presets.json
+  → 保存与恢复前把旧样式写入 history/<id>/；每个预设保留 20 份
 
 缩略图 → GET /md2pdf/previews
   → buildPreviews()：每个预设渲一份 HTML，边距从 @page 回读成 body 内边距
@@ -84,7 +86,7 @@ client.js         Client 入口：菜单项、工具栏、PrintHost、broker 轮
 src/markdown.js   内置渲染器；标题 id、目录、显式分页
 src/math.js       temml 懒加载与降级
 src/themes.js     三个内置预设的 CSS 文本与名称
-src/presets.js    预设库：播种、迁移、增删改排、动作分发
+src/presets.js    预设库：播种、迁移、增删改排、导入导出、历史、动作分发
 src/opener.js     用系统默认程序打开文件
 src/previews.js   每预设一份预览文档，边距回读
 src/settings.js   用户目录解析与样式上限
@@ -129,9 +131,9 @@ node scripts/export-cli.mjs samples/sample.md --html out.html
 node scripts/pdf-info.mjs samples/sample.pdf
 ```
 
-当前计数（2026-11-15）：render 146、document config 75、print options 121、presets 75、
-previews 23、dsh preview 70、printer 5、print server 42、print jobs 80、export 133、
-after export 95、broker 266、client UI 77。计数会随功能增长；闸门是「全部通过」。
+当前计数（2026-11-15）：render 175、document config 75、print options 123、presets 107、
+previews 23、dsh preview 70、printer 5、print server 42、print jobs 80、export 138、
+after export 95、broker 273、client UI 105。计数会随功能增长；闸门是「全部通过」。
 `list-audit` 必须打印 `failures: builtin=0 markdown(old)=0 gfm+math=0`。
 
 三条环境事实：`src/` 或 `index.js` 的改动要重启 DSH 才加载；只改 `client.js` 刷新页面即可。打印优先走 DSH 客户端；没有客户端时启动 Chromium 浏览器。测试打印写在 `MD2PDF_HOME/test-print`。
