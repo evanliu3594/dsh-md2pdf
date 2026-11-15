@@ -2,7 +2,7 @@
 
 Branch: v2-dsh-printing
 Base: 15dfbd9 (main at the branch point)
-Head at handoff: 9bd167f (30 commits)
+Code head: 4343056 (32 commits); this record is one docs commit later
 Date: 2026-11-15
 Design: docs/DESIGN.md
 Verification: docs/V2-VERIFICATION.md
@@ -44,9 +44,9 @@ S1 evidence: docs/S1-CHECKLIST.md
 
 ## Automatic verification
 
-Thirteen suites, green on Node 26.13.1 and Node 24.21.0 at 9bd167f:
+Thirteen suites, green on Node 26.13.1 and Node 24.21.0 at 4343056:
 
-    203 render / 80 document config / 123 print options / 116 presets
+    203 render / 80 document config / 131 print options / 116 presets
      25 previews / 70 dsh preview / 5 printer / 42 print server
      80 print jobs / 139 export / 95 after export / 294 broker / 107 client UI
 
@@ -64,17 +64,31 @@ node --check passes on every changed JS file; git diff --check is clean.
   3.8 mm deviation on 2026-11-14.
 - Details and exact output: docs/S1-CHECKLIST.md.
 
+## S2 result (2026-11-15, macOS)
+
+Seven print cases ran through `md2pdf_export` after a DSH restart:
+
+- gongwen: 4 pages, A4, left/right 28.05/25.74 mm, STFangsong/STKaiti
+  embedded, page numbers centered, 9 outline entries. PASS.
+- page numbers only, footer only, contents, paper fields, explicit page break:
+  PASS.
+- header only: PASS after the fix; the header now starts at 18 mm.
+
+The first run at 9bd167f found two defects. Chromium only builds the PDF
+outline when generateTaggedPDF is on, and the header template started at the
+paper edge. Both are fixed at 4343056 and re-verified. Test print, the S3
+close/cancel cases, S4, and the Windows matrix remain open.
+
 ## Manual gates still open
 
 These need a DSH restart with this branch linked and, for the last one, a
 Windows machine. Each case is listed with its expected result in
 docs/V2-VERIFICATION.md.
 
-- S2 print output: gongwen baseline, page-numbers-only, header-only,
-  footer-only, contents, paper fields, explicit page break, test print. The
-  single-side cases are required by the Task 8 review.
-- S3 agent broker: tool export through the client, client closed mid-job,
-  browser engine, two windows, cancellation.
+- S2 test print: Settings → Test print; the other seven S2 cases passed on
+  2026-11-15.
+- S3 agent broker: client closed mid-job, browser engine, two windows,
+  cancellation. The plain tool export passed on 2026-11-15.
 - S4 preset bundle and history: export, import with conflicts, history list,
   restore.
 - Windows matrix: link and restart, S2/S3/S4 equivalents, Chinese/space paths,
@@ -120,7 +134,15 @@ Important findings; all four are fixed at the head:
 
 The final-review commit also records two limitations honestly: the browser
 fallback does not run afterExport, and jobTimeoutMs/allowRemoteImages are not
-wired in v2. Manual S1/S2/S3/S4 and the Windows matrix remain the only gates.
+wired in v2. Manual S2/S3/S4 and the Windows matrix remain the only gates.
+
+S2 also found two print-option defects; both are fixed at 4343056:
+
+- generateDocumentOutline alone produces no outline; generateTaggedPDF is
+  required. Both follow the pdf.outline switch.
+- The header and footer templates now take the page's left and right margins as
+  padding, so a left-aligned header starts at the text edge rather than the
+  paper edge.
 
 ## Merge and release
 

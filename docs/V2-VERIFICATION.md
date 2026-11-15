@@ -1,7 +1,7 @@
 # v2 verification record
 
 Branch: `v2-dsh-printing`
-Commit under test: `9bd167f` (2026-11-15)
+Commit under test: `4343056` (2026-11-15)
 Design: `docs/DESIGN.md`
 
 This file records the automatic matrix and the manual gates. A row marked
@@ -10,7 +10,7 @@ result line.
 
 ## Automatic matrix
 
-`npm test` runs thirteen suites. Counts on 2026-11-15 at `9bd167f`:
+`npm test` runs thirteen suites. Counts on 2026-11-15 at `4343056`:
 
 | Suite | Node 26.13.1 | Node 24.21.0 |
 |---|---|---|
@@ -37,20 +37,24 @@ result line.
 
 Preconditions:
 
-- The Desktop profile links this worktree at `779da8a`; `printEngine: dsh`.
-- DSH Desktop was restarted after the link, so `src/` changes are loaded.
+- The Desktop profile links this worktree at `4343056`; `printEngine: dsh`.
+- DSH Desktop was restarted at 2026-11-15 15:40, so `src/` changes are loaded.
 - Poppler (`pdfinfo`, `pdffonts`, `pdftotext`) is available for measurement.
 
 | Case | Source | Expected | Result |
 |---|---|---|---|
-| S2-1 gongwen baseline | `samples/sample.md` + gongwen | 4 pages, A4, margins 37/26/35/28 mm within 0.5 mm, STFangsong/STKaiti, right-sidebar PDF, outline bookmarks | pending |
-| S2-2 page numbers only | front matter `pdf.pageNumbers: true` | footer page numbers centered on page 1 and the last page; header blank, with no date or title | pending |
-| S2-3 header only | front matter `pdf.header: 内部资料` | header shows the text; footer blank, with no URL, asset token, or page number | pending |
-| S2-4 footer only | front matter `pdf.footer: 页脚文字` | footer shows the text; header blank | pending |
-| S2-5 contents | front matter `pdf.toc: true` | contents on its own page, links jump in the viewer, no page numbers inside the contents, body starts on the next page | pending |
-| S2-6 paper fields | paper preset + `pdf.paper.title/authors/abstract/keywords` | title block on the first body page, no separate cover, English labels when `lang: en-US` | pending |
-| S2-7 explicit page break | a line `<!-- pagebreak -->` | the following content starts on a new page; the same text inside a fenced block stays code | pending |
+| S2-1 gongwen baseline | `samples/sample.md` + gongwen | 4 pages, A4, margins 37/26/35/28 mm within 0.5 mm, STFangsong/STKaiti, right-sidebar PDF, outline bookmarks | PASS 2026-11-15 15:40. 4 pages, A4 594.96x841.92 pt; left 28.05, right 25.74 mm; top 34.24/33.20/38.54/32.67 mm (accepted S1 exception); STFangsong/STKaiti/STSongti/PingFang/Times embedded; outline 9 entries under /Outlines; footer 第 N 页 / 共 4 页 centered at 106.0 mm on all pages. |
+| S2-2 page numbers only | front matter `pdf.pageNumbers: true` | footer page numbers centered on page 1 and the last page; header blank, with no date or title | PASS. 1 page; footer 第 1 页 / 共 1 页 at 105.0 mm; header empty. |
+| S2-3 header only | front matter `pdf.header: 内部资料` | header shows the text; footer blank, with no URL, asset token, or page number | PASS after 4343056. Header starts at 18.00 mm from the left edge; footer empty. The first run at 9bd167f put it at 1.06 mm. |
+| S2-4 footer only | front matter `pdf.footer: 页脚文字` | footer shows the text; header blank | PASS. Footer 页脚文字 at 105.0 mm; header empty. |
+| S2-5 contents | front matter `pdf.toc: true` | contents on its own page, links jump in the viewer, no page numbers inside the contents, body starts on the next page | PASS. 2 pages; page 1 目录 with h1-h3; page 2 body; 4 /Link annotations with /Dest; no page numbers. |
+| S2-6 paper fields | paper preset + `pdf.paper.title/authors/abstract/keywords` | title block on the first body page, no separate cover, English labels when `lang: en-US` | PASS. 1 page; title, authors, affiliation, date, Abstract, Keywords; English labels; no cover. |
+| S2-7 explicit page break | a line `<!-- pagebreak -->` | the following content starts on a new page; the same text inside a fenced block stays code | PASS. 2 pages; page 1 分页测试 + 第一页内容; page 2 第二页内容; the comment text is absent. |
 | S2-8 test print | Settings → Test print | one-page PDF under `MD2PDF_HOME/test-print`, engine reported, path shown | pending |
+
+The first local run at 9bd167f found two defects: the PDF had no /Outlines,
+and a header started 1 mm from the paper edge. Both are fixed at 4343056
+(tagged PDF plus template padding), and the cases above were re-run.
 
 The accepted S1 macOS exception still applies: pages 1, 2 and 4 of the gongwen
 sample start at 32.68, 33.19 and 34.24 mm instead of 37 mm because of the Mac
@@ -73,7 +77,7 @@ fresh client window.
 
 | Case | Action | Expected | Result |
 |---|---|---|---|
-| S3-1 | Call `md2pdf_export` on a sample path | client prints, Host writes, tool returns `engine: dsh`; no preview, no toast | pending |
+| S3-1 | Call `md2pdf_export` on a sample path | client prints, Host writes, tool returns `engine: dsh`; no preview, no toast | PASS 2026-11-15. Seven fixtures returned `engine: dsh`, `generator: builtin`, and wrote the PDF beside the source. The tool result has no preview or toast field. |
 | S3-2 | Close or refresh the client during a job | `job-timeout`, loopback server closed, old PDF unchanged, no `.md2pdf-*.pdf.tmp` beside the source | pending |
 | S3-3 | Set `printEngine: browser`, call the tool | browser result `engine: browser`; the client does not poll | pending |
 | S3-4 | Call the tool twice with two Desktop windows | tool jobs print one at a time; the second waits, then prints | pending |
