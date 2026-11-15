@@ -80,6 +80,9 @@ Seven print cases ran through `md2pdf_export` after a DSH restart:
 
 - browser engine: PASS; md2pdf_export returned engine browser in 1.38 s and
   wrote a 2-page PDF through Edge without a client lease.
+- cancellation: PASS; the run deadline cancelled a 670-page export. The old
+  27,322-byte PDF stayed unchanged, no staging file appeared, and a 15 s
+  follow-up found no late write.
 
 The first run at 9bd167f found two defects. Chromium only builds the PDF
 outline when generateTaggedPDF is on, and the header template started at the
@@ -93,8 +96,10 @@ Windows machine. Each case is listed with its expected result in
 docs/V2-VERIFICATION.md.
 
 - S2 is complete on macOS: all eight cases passed on 2026-11-15.
-- S3 agent broker: client closed mid-job and cancellation. The plain tool
-  export and the browser engine passed on 2026-11-15. The two-window case
+- S3 agent broker: client closed mid-job. The plain tool export, the browser
+  engine, and cancellation passed on 2026-11-15. Cancellation used the run
+  deadline (4 s) because two Stop-button attempts finished first (5.3 s and
+  16.4 s); the old PDF and staging files were unchanged. The two-window case
   cannot run on this install, which cannot open a second DSH window; the
   busy-claim rule is covered by the print-jobs suite.
 - S4 preset bundle and history: export, import with conflicts, history list,
