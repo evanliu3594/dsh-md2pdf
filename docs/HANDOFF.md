@@ -2,7 +2,7 @@
 
 Branch: v2-dsh-printing
 Base: 15dfbd9 (main at the branch point)
-Head at handoff: b763d3a (28 commits)
+Head at handoff: 9bd167f (30 commits)
 Date: 2026-11-15
 Design: docs/DESIGN.md
 Verification: docs/V2-VERIFICATION.md
@@ -44,9 +44,9 @@ S1 evidence: docs/S1-CHECKLIST.md
 
 ## Automatic verification
 
-Thirteen suites, green on Node 26.13.1 and Node 24.21.0 at b763d3a:
+Thirteen suites, green on Node 26.13.1 and Node 24.21.0 at 9bd167f:
 
-    195 render / 80 document config / 123 print options / 116 presets
+    203 render / 80 document config / 123 print options / 116 presets
      25 previews / 70 dsh preview / 5 printer / 42 print server
      80 print jobs / 139 export / 95 after export / 294 broker / 107 client UI
 
