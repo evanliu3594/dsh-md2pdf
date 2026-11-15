@@ -2817,108 +2817,6 @@ window.__ModuleLoader__.load({
             }, testStatus.text))
           }
 
-          if (presets.length > 0) {
-            rows.push(h('div', {
-              key: 'cards',
-              className: 'md2pdf-cards',
-              role: 'group',
-              'aria-label': t('settings.presetLabel'),
-            }, presets.map(preset => h('div', {
-              key: preset.id,
-              className: 'md2pdf-card',
-              'data-preset': preset.id,
-              'data-selected': selected === preset.id ? 'true' : 'false',
-            },
-            h('button', {
-              type: 'button',
-              className: 'md2pdf-card-apply',
-              'data-action': 'apply',
-              disabled: busy || pageBusy || phase === 'loading',
-              title: preset.name,
-              'aria-label': t('settings.applyPreset', { name: preset.name }),
-              onClick: () => { applyPreset(preset.id) },
-            },
-            h(Thumb, { html: previews[preset.id], width: CARD_WIDTH, height: CARD_HEIGHT }),
-            h('span', { className: 'md2pdf-card-label' }, preset.name)),
-            preset.unmodified === true
-              ? h('span', { className: 'md2pdf-card-tag' }, t('settings.gbTag'))
-              : null,
-            h('button', {
-              type: 'button',
-              className: 'md2pdf-card-edit',
-              'data-action': 'edit',
-              disabled: phase === 'loading',
-              'aria-label': t('settings.editPreset', { name: preset.name }),
-              onClick: () => { editPreset(preset.id) },
-            }, h(EditGlyph, null), t('settings.edit')),
-            h('button', {
-              type: 'button',
-              className: 'md2pdf-card-remove',
-              'data-action': 'remove',
-              disabled: busy || pageBusy || phase === 'loading',
-              'aria-label': t('settings.removePreset', { name: preset.name }),
-              onClick: () => { setDialog({ kind: 'delete', id: preset.id, name: preset.name }) },
-            }, h(TrashGlyph, null))))))
-            rows.push(h('p', { key: 'current', className: 'md2pdf-hint' },
-              t('settings.selected', { name: nameOf(selected) })))
-            rows.push(h('div', { key: 'preset-tools', className: 'md2pdf-row' },
-              h('button', {
-                type: 'button',
-                className: 'md2pdf-btn',
-                'data-md2pdf-action': 'export-presets',
-                disabled: busy || importBusy || phase === 'loading',
-                onClick: exportPresets,
-              }, t('settings.exportPresets')),
-              h('button', {
-                type: 'button',
-                className: 'md2pdf-btn',
-                'data-md2pdf-action': 'import-presets',
-                disabled: busy || importBusy || phase === 'loading',
-                onClick: () => {
-                  if (importInputRef.current !== null) importInputRef.current.click()
-                },
-              }, t('settings.importPresets')),
-              h('button', {
-                type: 'button',
-                className: 'md2pdf-btn',
-                'data-md2pdf-action': 'history',
-                disabled: busy || historyBusy || phase === 'loading' || selected === '',
-                onClick: openHistory,
-              }, t('settings.historyPresets')),
-              h('input', {
-                key: 'import-file',
-                ref: importInputRef,
-                type: 'file',
-                accept: 'application/json,.json',
-                style: { display: 'none' },
-                'data-md2pdf': 'import-file',
-                onChange: importPresetFile,
-              })))
-            if (historyOpen) {
-              rows.push(h('div', {
-                key: 'history-panel',
-                className: 'md2pdf-history',
-                'data-md2pdf': 'history-panel',
-              },
-              history.length === 0
-                ? h('p', { className: 'md2pdf-hint' }, t('settings.historyEmpty'))
-                : history.map(entry => h('div', {
-                  key: entry.name,
-                  className: 'md2pdf-row',
-                  'data-history': entry.name,
-                },
-                h('span', { className: 'md2pdf-path' }, formatTime(entry.savedAt)),
-                h('button', {
-                  type: 'button',
-                  className: 'md2pdf-btn',
-                  'data-md2pdf-action': 'restore-history',
-                  'data-history': entry.name,
-                  disabled: historyBusy,
-                  onClick: () => { restoreSnapshot(entry.name, entry.savedAt) },
-                }, t('settings.historyRestore'))))))
-            }
-          }
-
           rows.push(h('h3', { key: 'page-heading', className: 'md2pdf-heading' }, t('settings.pageHeading')))
           rows.push(h('p', { key: 'page-hint', className: 'md2pdf-hint' }, t('settings.pageHint')))
           rows.push(h('div', { key: 'page-form', className: 'md2pdf-page-form', 'data-md2pdf': 'page-form' },
@@ -2994,55 +2892,6 @@ window.__ModuleLoader__.load({
               'data-md2pdf': 'page-warning',
               role: 'status',
             }, t('settings.pageUnsupported', { detail: pageForms.join(', ') })))
-          }
-
-          rows.push(h('h3', { key: 'fonts-heading', className: 'md2pdf-heading' }, t('settings.fontHeading')))
-          rows.push(h('p', { key: 'fonts-hint', className: 'md2pdf-hint' }, t('settings.fontHint')))
-          if (fontRows.length === 0) {
-            rows.push(h('p', {
-              key: 'fonts-empty',
-              className: 'md2pdf-hint',
-              'data-md2pdf-fonts': 'empty',
-            }, t('settings.fontEmpty')))
-          } else {
-            rows.push(h('p', {
-              key: 'fonts-summary',
-              className: 'md2pdf-hint',
-              'data-md2pdf-fonts': 'summary',
-              'data-available': String(fontSummary.available),
-              'data-missing-cjk': String(fontSummary.cjk),
-              'data-missing-latin': String(fontSummary.latin),
-              'data-unverified': String(fontSummary.unverified),
-            }, t('settings.fontsSummary', fontSummary)))
-            rows.push(h('table', {
-              key: 'fonts-table',
-              className: 'md2pdf-font-table',
-              'data-md2pdf-fonts': 'table',
-            },
-            h('thead', null, h('tr', null,
-              h('th', { scope: 'col' }, t('settings.fontFamily')),
-              h('th', { scope: 'col' }, t('settings.fontCjk')),
-              h('th', { scope: 'col' }, t('settings.fontLatin')),
-              h('th', { scope: 'col' }, t('settings.fontState')))),
-            h('tbody', null, fontRows.map(({ font, state }) => h('tr', {
-              key: `font-${font.family}`,
-              'data-font': font.family,
-              'data-state': state,
-            },
-            h('td', { className: 'md2pdf-font-name' }, font.family),
-            h('td', { className: 'md2pdf-font-mark' }, font.cjk === null ? '—' : font.cjk ? '✓' : '✗'),
-            h('td', { className: 'md2pdf-font-mark' }, font.latin === null ? '—' : font.latin ? '✓' : '✗'),
-            h('td', null, h('span', {
-              className: 'md2pdf-font-state',
-              'data-state': state,
-            }, fontStateText(state))))))))
-            if (hasFaceFamily) {
-              rows.push(h('p', {
-                key: 'fonts-face-note',
-                className: 'md2pdf-hint',
-                'data-md2pdf-fonts': 'face-note',
-              }, t('settings.fontFaceNote')))
-            }
           }
 
           rows.push(h('h3', { key: 'doc-heading', className: 'md2pdf-heading' }, t('settings.docHeading')))
@@ -3170,6 +3019,108 @@ window.__ModuleLoader__.load({
               onClick: resetDocument,
             }, t('settings.docReset'))))
 
+          if (presets.length > 0) {
+            rows.push(h('div', {
+              key: 'cards',
+              className: 'md2pdf-cards',
+              role: 'group',
+              'aria-label': t('settings.presetLabel'),
+            }, presets.map(preset => h('div', {
+              key: preset.id,
+              className: 'md2pdf-card',
+              'data-preset': preset.id,
+              'data-selected': selected === preset.id ? 'true' : 'false',
+            },
+            h('button', {
+              type: 'button',
+              className: 'md2pdf-card-apply',
+              'data-action': 'apply',
+              disabled: busy || pageBusy || phase === 'loading',
+              title: preset.name,
+              'aria-label': t('settings.applyPreset', { name: preset.name }),
+              onClick: () => { applyPreset(preset.id) },
+            },
+            h(Thumb, { html: previews[preset.id], width: CARD_WIDTH, height: CARD_HEIGHT }),
+            h('span', { className: 'md2pdf-card-label' }, preset.name)),
+            preset.unmodified === true
+              ? h('span', { className: 'md2pdf-card-tag' }, t('settings.gbTag'))
+              : null,
+            h('button', {
+              type: 'button',
+              className: 'md2pdf-card-edit',
+              'data-action': 'edit',
+              disabled: phase === 'loading',
+              'aria-label': t('settings.editPreset', { name: preset.name }),
+              onClick: () => { editPreset(preset.id) },
+            }, h(EditGlyph, null), t('settings.edit')),
+            h('button', {
+              type: 'button',
+              className: 'md2pdf-card-remove',
+              'data-action': 'remove',
+              disabled: busy || pageBusy || phase === 'loading',
+              'aria-label': t('settings.removePreset', { name: preset.name }),
+              onClick: () => { setDialog({ kind: 'delete', id: preset.id, name: preset.name }) },
+            }, h(TrashGlyph, null))))))
+            rows.push(h('p', { key: 'current', className: 'md2pdf-hint' },
+              t('settings.selected', { name: nameOf(selected) })))
+            rows.push(h('div', { key: 'preset-tools', className: 'md2pdf-row' },
+              h('button', {
+                type: 'button',
+                className: 'md2pdf-btn',
+                'data-md2pdf-action': 'export-presets',
+                disabled: busy || importBusy || phase === 'loading',
+                onClick: exportPresets,
+              }, t('settings.exportPresets')),
+              h('button', {
+                type: 'button',
+                className: 'md2pdf-btn',
+                'data-md2pdf-action': 'import-presets',
+                disabled: busy || importBusy || phase === 'loading',
+                onClick: () => {
+                  if (importInputRef.current !== null) importInputRef.current.click()
+                },
+              }, t('settings.importPresets')),
+              h('button', {
+                type: 'button',
+                className: 'md2pdf-btn',
+                'data-md2pdf-action': 'history',
+                disabled: busy || historyBusy || phase === 'loading' || selected === '',
+                onClick: openHistory,
+              }, t('settings.historyPresets')),
+              h('input', {
+                key: 'import-file',
+                ref: importInputRef,
+                type: 'file',
+                accept: 'application/json,.json',
+                style: { display: 'none' },
+                'data-md2pdf': 'import-file',
+                onChange: importPresetFile,
+              })))
+            if (historyOpen) {
+              rows.push(h('div', {
+                key: 'history-panel',
+                className: 'md2pdf-history',
+                'data-md2pdf': 'history-panel',
+              },
+              history.length === 0
+                ? h('p', { className: 'md2pdf-hint' }, t('settings.historyEmpty'))
+                : history.map(entry => h('div', {
+                  key: entry.name,
+                  className: 'md2pdf-row',
+                  'data-history': entry.name,
+                },
+                h('span', { className: 'md2pdf-path' }, formatTime(entry.savedAt)),
+                h('button', {
+                  type: 'button',
+                  className: 'md2pdf-btn',
+                  'data-md2pdf-action': 'restore-history',
+                  'data-history': entry.name,
+                  disabled: historyBusy,
+                  onClick: () => { restoreSnapshot(entry.name, entry.savedAt) },
+                }, t('settings.historyRestore'))))))
+            }
+          }
+
           rows.push(h('div', { key: 'editor-head', className: 'md2pdf-row' },
             h('span', { className: 'md2pdf-heading' }, editingLabel),
             dirty ? h('span', { className: 'md2pdf-flag' }, t('settings.dirty')) : null))
@@ -3231,6 +3182,17 @@ window.__ModuleLoader__.load({
               }, t('settings.restore'))
               : null))
 
+          if (typeof previews[selected] === 'string' && previews[selected] !== '') {
+            rows.push(h('div', {
+              key: 'preview',
+              className: 'md2pdf-preview',
+              'data-md2pdf': 'preview',
+            },
+            h('p', { className: 'md2pdf-card-label', style: { textAlign: 'left' } }, t('settings.preview')),
+            h('p', { className: 'md2pdf-hint' }, t('settings.previewHint')),
+            h(Thumb, { html: previews[selected], width: PREVIEW_WIDTH, height: PREVIEW_HEIGHT })))
+          }
+
           if (status !== null) {
             rows.push(h('p', {
               key: 'status',
@@ -3256,15 +3218,53 @@ window.__ModuleLoader__.load({
             rows.push(h('p', { key: 'dir', className: 'md2pdf-path' }, t('settings.dir', { path: meta.presetsPath })))
           }
 
-          if (typeof previews[selected] === 'string' && previews[selected] !== '') {
-            rows.push(h('div', {
-              key: 'preview',
-              className: 'md2pdf-preview',
-              'data-md2pdf': 'preview',
+          rows.push(h('h3', { key: 'fonts-heading', className: 'md2pdf-heading' }, t('settings.fontHeading')))
+          rows.push(h('p', { key: 'fonts-hint', className: 'md2pdf-hint' }, t('settings.fontHint')))
+          if (fontRows.length === 0) {
+            rows.push(h('p', {
+              key: 'fonts-empty',
+              className: 'md2pdf-hint',
+              'data-md2pdf-fonts': 'empty',
+            }, t('settings.fontEmpty')))
+          } else {
+            rows.push(h('p', {
+              key: 'fonts-summary',
+              className: 'md2pdf-hint',
+              'data-md2pdf-fonts': 'summary',
+              'data-available': String(fontSummary.available),
+              'data-missing-cjk': String(fontSummary.cjk),
+              'data-missing-latin': String(fontSummary.latin),
+              'data-unverified': String(fontSummary.unverified),
+            }, t('settings.fontsSummary', fontSummary)))
+            rows.push(h('table', {
+              key: 'fonts-table',
+              className: 'md2pdf-font-table',
+              'data-md2pdf-fonts': 'table',
             },
-            h('p', { className: 'md2pdf-card-label', style: { textAlign: 'left' } }, t('settings.preview')),
-            h('p', { className: 'md2pdf-hint' }, t('settings.previewHint')),
-            h(Thumb, { html: previews[selected], width: PREVIEW_WIDTH, height: PREVIEW_HEIGHT })))
+            h('thead', null, h('tr', null,
+              h('th', { scope: 'col' }, t('settings.fontFamily')),
+              h('th', { scope: 'col' }, t('settings.fontCjk')),
+              h('th', { scope: 'col' }, t('settings.fontLatin')),
+              h('th', { scope: 'col' }, t('settings.fontState')))),
+            h('tbody', null, fontRows.map(({ font, state }) => h('tr', {
+              key: `font-${font.family}`,
+              'data-font': font.family,
+              'data-state': state,
+            },
+            h('td', { className: 'md2pdf-font-name' }, font.family),
+            h('td', { className: 'md2pdf-font-mark' }, font.cjk === null ? '—' : font.cjk ? '✓' : '✗'),
+            h('td', { className: 'md2pdf-font-mark' }, font.latin === null ? '—' : font.latin ? '✓' : '✗'),
+            h('td', null, h('span', {
+              className: 'md2pdf-font-state',
+              'data-state': state,
+            }, fontStateText(state))))))))
+            if (hasFaceFamily) {
+              rows.push(h('p', {
+                key: 'fonts-face-note',
+                className: 'md2pdf-hint',
+                'data-md2pdf-fonts': 'face-note',
+              }, t('settings.fontFaceNote')))
+            }
           }
 
           if (meta.maxBytes > 0) {

@@ -102,7 +102,7 @@ Out of scope in v2: cover pages, a full red-head template, watermarks, contents 
 
 ## Interface
 
-The settings page shows three preset cards above the editor and the stylesheet path.
+The settings page reads top to bottom: print engine, page settings and document overrides, the preset library, the CSS editor with the selected preset's preview, the font table, and diagnostics.
 
 ![Settings page](docs/images/settings.png)
 
@@ -114,7 +114,7 @@ A card carries three hot zones, shown on hover:
 
 A thumbnail is that preset's real rendering, scaled down, so colours, type scale, page margins and table rules match the exported PDF. An unmodified national-standard preset carries a GB badge.
 
-The editor title names the preset being edited and adds an "unsaved" badge once you change something. Saving opens a name dialog prefilled with the current name; a name already used by another preset asks before replacing it, and a new name creates a preset. The toolbar also offers New, Reload, Move up and Move down, plus Restore built-in presets once one has been deleted.
+The editor title names the preset being edited and adds an "unsaved" badge once you change something. Saving opens a name dialog prefilled with the current name; a name already used by another preset asks before replacing it, and a new name creates a preset. The toolbar also offers New, Reload, Move up and Move down, plus Restore built-in presets once one has been deleted. The selected preset's first-page preview sits directly under the editor.
 
 Three buttons sit under the preset cards:
 

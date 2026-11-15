@@ -123,6 +123,29 @@ for (const marker of [
     client.includes("'data-md2pdf': '" + marker + "'"))
 }
 
+// The settings page reads top to bottom: page settings, document overrides,
+// style library, editor and preview, fonts, diagnostics. Moving the font table
+// between the library and the editor made the two halves feel disconnected.
+const settingsOrder = [
+  "rows.push(h('h3', { key: 'page-heading'",
+  "rows.push(h('h3', { key: 'doc-heading'",
+  'if (presets.length > 0) {',
+  "rows.push(h('div', { key: 'editor-head'",
+  "if (typeof previews[selected] === 'string'",
+  "rows.push(h('h3', { key: 'fonts-heading'",
+  "rows.push(h('h3', { key: 'diag-heading'",
+]
+let previousSection = -1
+for (const marker of settingsOrder) {
+  const index = client.indexOf(marker)
+  expectTrue('the settings section ' + marker + ' exists', index >= 0)
+  if (index >= 0) {
+    expectTrue('the settings order keeps ' + marker + ' after the previous section',
+      index > previousSection)
+    previousSection = index
+  }
+}
+
 // The document form covers every one-off field.
 for (const field of [
   'doc-size',
