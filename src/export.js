@@ -29,6 +29,7 @@ import { parseFrontmatter, splitFrontmatter } from './markdown.js'
 import { openPath } from './opener.js'
 import { pageMarginsInches, pageOverrideCss } from './page-css.js'
 import { describeEngines, PdfError, printBrowser, verifyPdf } from './pdf.js'
+import { buildPrintOptions } from './print-options.js'
 import { CLIENT_FAILURE_REASONS, createPrintJobs } from './print-jobs.js'
 import { listPresets, presetCssPath, readPreset } from './presets.js'
 import { startPrintServer } from './print-server.js'
@@ -146,11 +147,13 @@ function targetOf(sourcePath) {
  * @param markdown - the complete source text.
  * @param request - `{ preset?, page?, documentConfig? }`.
  * @param fallbackPage - process-level page used only when the request sets none.
- * @returns the preset, the effective partial page, and the front matter warnings.
+ * @param documentDefaults - row configuration for page numbers and the outline.
+ * @returns the preset, the effective partial page, the document config, the
+ *   front matter fields, and the front matter warnings.
  * @throws {PdfError} for an unknown preset, an invalid page, or invalid front
  *   matter.
  */
-async function resolveDocumentSetup(markdown, request, fallbackPage) {
+async function resolveDocumentSetup(markdown, request, fallbackPage, documentDefaults) {
   const { frontmatter } = splitFrontmatter(markdown)
   const fields = parseFrontmatter(frontmatter)
 
@@ -165,9 +168,42 @@ async function resolveDocumentSetup(markdown, request, fallbackPage) {
   const merged = mergeDocumentConfig({
     presetPage: preset.page ?? {},
     frontmatter: fields,
+    defaults: documentDefaults,
     request: { page: request?.page ?? fallbackPage, documentConfig: request?.documentConfig },
   })
-  return { preset, page: merged.page, warnings: merged.warnings }
+  return {
+    preset,
+    page: merged.page,
+    document: merged.document,
+    frontmatter: fields,
+    warnings: merged.warnings,
+  }
+}
+
+/**
+ * Read the row configuration that seeds the document config.
+ *
+ * Page numbers default off and the outline default on; both are row settings
+ * that front matter and a one-off request may override.
+ * @param options - row configuration.
+ * @returns the document defaults, with only the fields the row sets.
+ */
+function documentDefaultsOf(options = {}) {
+  const defaults = {}
+  if (options.pageNumbers !== undefined) defaults.pageNumbers = options.pageNumbers === true
+  if (options.outline !== undefined) defaults.outline = options.outline !== false
+  return defaults
+}
+
+/**
+ * Read one front matter field as template text.
+ * @param fields - flat front matter fields.
+ * @param key - field name.
+ * @returns the trimmed text, or an empty string.
+ */
+function frontmatterText(fields, key) {
+  const value = fields[key]
+  return typeof value === 'string' ? value.trim() : ''
 }
 
 /**
@@ -504,7 +540,12 @@ export async function prepareExport(request = {}, options = {}) {
   // The preset and page precedence are shared with the browser fallback:
   // request preset > `pdf.preset` > selected, and preset page < front matter
   // page < request page. Only explicit page fields participate.
-  const { preset, page, warnings: mergeWarnings } = await resolveDocumentSetup(markdown, request)
+  const { preset, page, document, frontmatter, warnings: mergeWarnings } = await resolveDocumentSetup(
+    markdown,
+    request,
+    undefined,
+    documentDefaultsOf(options),
+  )
 
   const rendered = await renderDocument({
     markdown,
@@ -520,13 +561,14 @@ export async function prepareExport(request = {}, options = {}) {
   // PDF still prints, and the client reports what was skipped.
   const warnings = [...mergeWarnings, ...await scanAssets(rendered.html, directory)]
 
+  // Header, footer, page numbers, and the outline come from the merged document
+  // config; margins come from the final @page box, never from a fixed default.
   const printOptions = {
-    printBackground: true,
-    preferCSSPageSize: true,
-    margins: pageMarginsInches(rendered.html),
-    displayHeaderFooter: false,
-    generateDocumentOutline: false,
-    pageRanges: '',
+    ...buildPrintOptions(document, pageMarginsInches(rendered.html), {
+      title: frontmatterText(frontmatter, 'title') || stem,
+      author: frontmatterText(frontmatter, 'author'),
+      date: frontmatterText(frontmatter, 'date'),
+    }),
     ...(page.landscape === undefined ? {} : { landscape: page.landscape }),
   }
   const job = jobs.create({
@@ -757,7 +799,9 @@ export async function exportMarkdownToPdf(request, options = {}) {
     }
     // The same rule the DSH path uses; the saved page settings, the file's
     // front matter, and the request override all reach the printed page.
-    const { preset, page } = await resolveDocumentSetup(markdown, request, options.page)
+    const { preset, page } = await resolveDocumentSetup(
+      markdown, request, options.page, documentDefaultsOf(options),
+    )
     const browserPath = request?.browserPath ?? options.browserPath
     const print = typeof options.printBrowser === 'function' ? options.printBrowser : printBrowser
 

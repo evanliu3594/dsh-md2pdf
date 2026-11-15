@@ -380,6 +380,10 @@ export function apply(ctx, config) {
     engine: config?.engine,
     printEngine: config?.printEngine,
     afterExport: config?.afterExport,
+    // Document defaults: page numbers are off until the row or a file asks for
+    // them; the PDF outline is on unless the row turns it off.
+    pageNumbers: config?.pageNumbers === true,
+    outline: config?.outline !== false,
     browserPath: config?.browserPath,
     pandocPath: config?.pandocPath,
     renderer: config?.renderer,

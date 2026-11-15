@@ -110,6 +110,7 @@ v2 把“渲染”和“打印”拆开。
 | `src/export.js` | 导出编排；拆成 prepare 与 finish 两步；浏览器回退 |
 | `src/document-config.js` | 解析 `pdf.*` front matter，合并默认值、预设元数据、front matter、请求覆盖 |
 | `src/page-css.js` | 生成最终 `@page`/`body` 覆盖层；把 CSS 边距解析成英寸；复用 `pageMarginOf()` |
+| `src/print-options.js` | 生成 `printToPDF` 参数：页眉页脚模板、居中页码、PDF 大纲开关、边距 |
 | `src/print-jobs.js` | 打印任务状态机、令牌、队列、超时、客户端在场判断 |
 | `src/print-server.js` | 一次性 loopback 资源服务：HTML、图片、字体；token、CSP、路径校验、超时关闭 |
 | `src/pdf.js` | 浏览器打印适配器、`awaitPdf()`、PDF 头尾校验；删除不可达的 Host Electron 分支 |
@@ -237,7 +238,7 @@ pdf.toc: true
 | 模板 | 键 |
 |---|---|
 | 论文 | `pdf.paper.title`、`authors`、`affiliations`、`abstract`、`keywords`、`date` |
-| 通用 | `pdf.header`、`pdf.footer`、`pdf.pageNumbers`、`pdf.toc` |
+| 通用 | `pdf.header`、`pdf.footer`、`pdf.pageNumbers`、`pdf.toc`、`pdf.outline` |
 
 语义：
 
@@ -369,6 +370,8 @@ Client 把 Host 返回的参数原样传给 `<webview>.printToPDF()`：
 ```
 
 页边距从最终 `@page` 解析。禁止继续使用固定的 `page.marginMm`，否则公文预设的 37/26/35/28 mm 会被压成 18 mm。Host 传给 Client 的 `config.page` 是只含显式字段的 `PageOverride`；`landscape` 未设置时不传，交给 CSS `@page`。`displayHeaderFooter` 由页眉、页脚或页码任一启用决定。
+
+Host 在 `src/print-options.js` 生成参数，Client 原样转发；参数只由 Host 决定。
 
 页眉页脚模板由 Host 生成并转义：
 
@@ -579,8 +582,8 @@ document.fonts.check('16px "Family"', 'A')
 |---|---|---|
 | `printEngine` | `auto` | `auto`、`dsh`、`browser` |
 | `afterExport` | `dsh` | `dsh`、`system`、`none` |
-| `pageNumbers` | false | 默认页码开关；预设/front matter 可覆盖 |
-| `outline` | true | 生成 PDF 大纲 |
+| `pageNumbers` | false | 默认页码开关；front matter 与请求可覆盖 |
+| `outline` | true | 生成 PDF 大纲；front matter `pdf.outline` 与请求可覆盖 |
 | `allowRemoteImages` | false | 是否允许远程图片 |
 | `jobTimeoutMs` | 120000 | 打印任务超时 |
 

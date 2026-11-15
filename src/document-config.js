@@ -32,9 +32,25 @@ function emptyPage() {
   return {}
 }
 
-/** Document settings before any front matter or request override. */
-function emptyDocument() {
-  return { header: '', footer: '', pageNumbers: false, toc: false, paper: {} }
+/**
+ * Document settings before any front matter or request override.
+ *
+ * The plugin's row configuration is the base layer: page numbers default off,
+ * the PDF outline defaults on. Front matter and the one-off request may change
+ * either one later.
+ * @param defaults - row configuration for the document layer.
+ * @returns a document config with the row defaults applied.
+ */
+function emptyDocument(defaults = {}) {
+  const source = defaults !== null && typeof defaults === 'object' ? defaults : {}
+  return {
+    header: typeof source.header === 'string' ? source.header : '',
+    footer: typeof source.footer === 'string' ? source.footer : '',
+    pageNumbers: source.pageNumbers === true,
+    outline: source.outline !== false,
+    toc: source.toc === true,
+    paper: {},
+  }
 }
 
 /**
@@ -198,7 +214,7 @@ function applyDocumentOverride(document, source, label) {
     if (!Object.hasOwn(source, field) || source[field] === undefined || source[field] === null) continue
     document[field] = textOf(`${label}.${field}`, source[field])
   }
-  for (const field of ['pageNumbers', 'toc']) {
+  for (const field of ['pageNumbers', 'toc', 'outline']) {
     if (!Object.hasOwn(source, field) || source[field] === undefined || source[field] === null) continue
     document[field] = booleanOf(`${label}.${field}`, source[field])
   }
@@ -217,21 +233,23 @@ function applyDocumentOverride(document, source, label) {
  *
  * Recognised page keys are `pdf.page.size`, `pdf.page.marginMm`,
  * `pdf.page.fontSize` and `pdf.page.landscape`. Recognised document keys are
- * `pdf.header`, `pdf.footer`, `pdf.pageNumbers` and `pdf.toc`; `pdf.paper.*`
- * fields travel with the document config for the paper template, and
- * `pdf.preset` selects a preset elsewhere. Every other `pdf.*` key is recorded
- * as a warning and left out, so a typo cannot break the export.
+ * `pdf.header`, `pdf.footer`, `pdf.pageNumbers`, `pdf.toc` and
+ * `pdf.outline`; `pdf.paper.*` fields travel with the document config for the
+ * paper template, and `pdf.preset` selects a preset elsewhere. Every other
+ * `pdf.*` key is recorded as a warning and left out, so a typo cannot break
+ * the export.
  * @param frontmatter - flat front matter fields, values as text.
+ * @param defaults - row configuration used as the document base layer.
  * @returns the explicit page override, the document config, and warnings.
  * @throws {PdfError} for an invalid value.
  */
-export function parseDocumentConfig(frontmatter) {
+export function parseDocumentConfig(frontmatter, defaults = {}) {
   const source = frontmatter ?? {}
   if (typeof source !== 'object' || Array.isArray(source)) {
     throw new PdfError('bad-request', 'frontmatter must be an object of flat fields')
   }
   const page = emptyPage()
-  const document = emptyDocument()
+  const document = emptyDocument(defaults)
   const warnings = []
   for (const [key, value] of Object.entries(source)) {
     if (!key.startsWith('pdf.')) continue
@@ -267,6 +285,9 @@ export function parseDocumentConfig(frontmatter) {
       case 'pdf.toc':
         document.toc = booleanOf(key, value)
         break
+      case 'pdf.outline':
+        document.outline = booleanOf(key, value)
+        break
       default:
         warnings.push(key)
     }
@@ -288,11 +309,12 @@ export function parseDocumentConfig(frontmatter) {
  * @param input.presetPage - the selected preset's page override, if any.
  * @param input.frontmatter - flat front matter fields, values as text.
  * @param input.request - request body; `page` and `documentConfig` are read.
+ * @param input.defaults - row configuration for the document layer.
  * @returns the effective page override, document config, and warnings.
  * @throws {PdfError} for an invalid value in the front matter or request.
  */
-export function mergeDocumentConfig({ presetPage, frontmatter, request } = {}) {
-  const parsed = parseDocumentConfig(frontmatter)
+export function mergeDocumentConfig({ presetPage, frontmatter, request, defaults } = {}) {
+  const parsed = parseDocumentConfig(frontmatter, defaults)
   const incoming = request ?? {}
 
   const page = copyPageOverride(presetPage)
