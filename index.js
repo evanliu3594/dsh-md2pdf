@@ -393,6 +393,7 @@ export function apply(ctx, config) {
     printBrowser: config?.printBrowser,
     startPrintServer: config?.startPrintServer,
     brokerHeartbeatMs: config?.brokerHeartbeatMs,
+    presenceWaitMs: config?.presenceWaitMs,
   }
 
   ctx.effect(() => ctx.webServer.register({

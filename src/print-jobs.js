@@ -153,11 +153,33 @@ export function createPrintJobs({
       assetRoot: input.assetRoot,
       printOptions: input.printOptions,
       state: 'prepared',
+      // A tool job is not claimable until its print URL exists. The exporter
+      // creates the job before the loopback server has an address and calls
+      // markReady once the URL is stored.
+      ready: false,
       createdAt,
       deadline: createdAt + timeoutMs,
       owner: input.owner === 'tool' ? 'tool' : 'ui',
     }
     jobs.set(job.id, job)
+    return job
+  }
+
+  /**
+   * Mark one job ready for a broker claim.
+   *
+   * A tool job is created before its loopback server has an address, so the
+   * broker must not hand it out until `printUrl` exists. Readiness is separate
+   * from `prepared`: the job is prepared while the server starts and becomes
+   * claimable only after the exporter has the printable URL.
+   * @param idOrToken - job id, asset token, or finish token.
+   * @returns the ready job.
+   * @throws {Error} with `code` and `status` when the job is unknown.
+   */
+  function markReady(idOrToken) {
+    const job = get(idOrToken)
+    if (job === null) throw jobError('bad-request', 400, 'unknown print job')
+    job.ready = true
     return job
   }
 
@@ -205,6 +227,7 @@ export function createPrintJobs({
     }
     for (const job of jobs.values()) {
       if (job.owner !== 'tool' || job.state !== 'prepared') continue
+      if (job.ready !== true) continue
       return takeClaim(job)
     }
     return null
@@ -418,6 +441,6 @@ export function createPrintJobs({
   }
 
   return {
-    create, claimNext, claimToolJob, markPrinting, fail, finish, expire, get, presence, close,
+    create, claimNext, claimToolJob, markReady, markPrinting, fail, finish, expire, get, presence, close,
   }
 }

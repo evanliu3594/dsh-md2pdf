@@ -66,6 +66,15 @@ const STAGING_ID = /^[a-z0-9-]{1,64}$/
 const TOOL_WATCH_MS = 100
 
 /**
+ * How long an agent tool waits for a connected client before choosing an
+ * engine. This is a client-presence check, not a queue-idle check.
+ */
+export const TOOL_PRESENCE_WAIT_MS = 10_000
+
+/** How often the tool rechecks presence during that wait. */
+const TOOL_PRESENCE_POLL_MS = 100
+
+/**
  * Failure reasons a tool may retry through the browser in `auto` mode.
  *
  * Every reason here means no file was written. `file-busy` and `pdf-invalid`
@@ -564,6 +573,10 @@ export async function prepareExport(request = {}, options = {}) {
     theme: rendered.theme,
     warnings,
   })
+  // Only now does the job have everything a client needs: a printable URL, a
+  // live server entry, and the finish token. A broker claim before this point
+  // would hand out a payload without a print URL and strand the job.
+  jobs.markReady(job.id)
 
   return {
     jobId: job.id,
@@ -968,12 +981,41 @@ async function browserFallbackTool(request, options) {
 }
 
 /**
+ * Wait up to the presence window for a connected client.
+ *
+ * DESIGN requires the tool to wait ten seconds for a client before it chooses
+ * the browser fallback or reports `client-required`. This wait is about client
+ * presence, not queue idleness: once a client is present the tool creates the
+ * job and waits to the job deadline.
+ * @param jobs - the job store that records client polls.
+ * @param options - the caller's abort signal and a wait override for checks.
+ * @returns true when a client is present, false when the window closes.
+ * @throws the abort reason when the caller cancels during the wait.
+ */
+async function waitForToolPresence(jobs, { signal, waitMs } = {}) {
+  const budget = Number.isFinite(waitMs) && waitMs >= 0 ? waitMs : TOOL_PRESENCE_WAIT_MS
+  const deadline = Date.now() + budget
+  for (;;) {
+    if (signal !== undefined && signal.aborted === true) throw abortErrorOf(signal)
+    if (jobs.presence.isPresent()) return true
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) return false
+    await new Promise(resolveWait => {
+      setTimeout(resolveWait, Math.min(TOOL_PRESENCE_POLL_MS, remaining))
+    })
+  }
+}
+
+/**
  * Export one markdown file for the agent tool.
  *
  * The tool has no client object of its own, so it hands the work to a
- * connected DSH client through the print-job queue. The engine policy decides
- * whether a client is used; the job watcher returns the committed result. In
- * `auto` mode a failure that cannot have written the target falls back to the
+ * connected DSH client through the print-job queue. It first waits up to the
+ * 10 s presence window for that client to poll; if none appears, `auto` falls
+ * back to the browser, `dsh` reports `client-required`, and a missing browser
+ * with no client reports `no-printer`. When a client is present the engine
+ * policy selects the broker, the job watcher returns the committed result, and
+ * an `auto` job failure that cannot have written the target falls back to the
  * browser. A successful finish never falls back, and neither do `file-busy`
  * and `pdf-invalid`, because the target may already hold a result.
  *
@@ -982,7 +1024,8 @@ async function browserFallbackTool(request, options) {
  * orphan temp file or listening socket survives the cancellation.
  * @param request - `{ path, cwd?, preset?, page?, documentConfig? }`.
  * @param options - row configuration, the job store, an optional abort signal,
- *   and the checks' injected browser printer.
+ *   a `presenceWaitMs` override for the checks, and the checks' injected
+ *   browser printer.
  * @returns the `md2pdf_export` result: `{ ok, pdfPath, sourcePath, bytes, engine,
  *   generator, durationMs }`.
  * @throws {PdfError} for every refusal, failure, or timeout the agent can act on.
@@ -992,17 +1035,33 @@ export async function exportTool(request = {}, options = {}) {
   if (signal !== undefined && signal.aborted === true) throw abortErrorOf(signal)
   const jobs = resolvePrintJobs(options)
   const printEngine = toolPrintEngine(options.printEngine)
-  const browserAvailable = printEngine === 'auto' ? await browserAvailableFor(options) : false
-  const choice = chooseToolEngine({
-    printEngine,
-    clientPresent: jobs.presence.isPresent(),
-    browserAvailable,
+  // An explicit browser choice never needs a client and never waits.
+  if (printEngine === 'browser') return toolResultOf(await exportMarkdownToPdf(request, options))
+
+  // DESIGN: wait up to 10 s for a client before deciding to fall back. The
+  // route records presence on every poll, so a connected Desktop client will
+  // register even while the queue is empty.
+  const clientPresent = await waitForToolPresence(jobs, {
+    signal,
+    waitMs: options.presenceWaitMs,
   })
+  if (signal !== undefined && signal.aborted === true) throw abortErrorOf(signal)
+  const browserAvailable = printEngine === 'auto' && !clientPresent
+    ? await browserAvailableFor(options)
+    : false
+  if (signal !== undefined && signal.aborted === true) throw abortErrorOf(signal)
+  const choice = chooseToolEngine({ printEngine, clientPresent, browserAvailable })
   if (choice === 'client-required') {
-    throw new PdfError('client-required', 'no DSH client is connected and the DSH printer is required')
+    throw new PdfError(
+      'client-required',
+      'no DSH client connected within the presence window and the DSH printer is required',
+    )
   }
   if (choice === 'no-printer') {
-    throw new PdfError('no-printer', 'no DSH client is connected and no browser is available')
+    throw new PdfError(
+      'no-printer',
+      'no DSH client connected within the presence window and no browser is available',
+    )
   }
   if (choice === 'browser') return toolResultOf(await exportMarkdownToPdf(request, options))
 

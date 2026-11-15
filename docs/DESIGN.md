@@ -411,6 +411,8 @@ prepared/claimed/printing → expired
 
 任务字段：`id`、`assetToken`、`finishToken`、`sessionId`、`sourcePath`、`targetPath`、`html`、`assetRoot`、`printOptions`、`state`、`createdAt`、`deadline`、`owner`（`ui` 或 `tool`）。
 
+工具的 10 秒在场检查发生在创建任务之前：有客户端轮询就创建任务，没有则按引擎回退。任务在资源服务启动、`printUrl` 可用之前不可被 broker 认领；`ready` 标记由导出器在资源服务就绪后设置。长轮询只交付 ready 的 tool 任务。
+
 队列同一时刻只允许一个 `printing` 任务；其余 `prepared` 等待。客户端一次只执行一个 `printToPDF`。UI 直连导出与 tool 代理任务都经过客户端同一个打印队列；Host 任务队列负责顺序与状态。
 
 任务超时从 `prepare` 起算，队列等待计入。工具等待 10 秒是客户端在场检查，不是队列空闲检查；有客户端在场就等到 `jobTimeoutMs`。v2 串行打印，一次一个任务。

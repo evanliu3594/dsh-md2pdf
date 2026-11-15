@@ -114,7 +114,7 @@ process.env['MD2PDF_HOME'] = home
 const PDF = Buffer.from('%PDF-1.4\n%%EOF\n', 'latin1')
 
 const {
-  chooseToolEngine, exportTool, failPrintJob, finishExport, prepareExport,
+  chooseToolEngine, exportTool, failPrintJob, finishExport, prepareExport, TOOL_PRESENCE_WAIT_MS,
 } = await import('../src/export.js')
 const { CLIENT_FAILURE_REASONS, createPrintJobs } = await import('../src/print-jobs.js')
 const indexModule = await import('../index.js')
@@ -285,6 +285,19 @@ try {
   clock += 1
   const toolSecond = store.create(jobInput('tool-second', 'tool'))
 
+  expectEqual('a new tool job is not ready', toolFirst.ready, false)
+  expectEqual('an unready tool job is not claimable', store.claimToolJob(), null)
+  let unknownReady = null
+  try {
+    store.markReady('missing-token')
+  } catch (error) {
+    unknownReady = error
+  }
+  expectEqual('markReady refuses an unknown job', unknownReady?.code, 'bad-request')
+  store.markReady(toolFirst.id)
+  store.markReady(toolSecond.id)
+  expectEqual('markReady makes the tool job ready', toolFirst.ready, true)
+
   expectTrue('claimToolJob takes the oldest prepared tool job', store.claimToolJob() === toolFirst)
   expectEqual('a claimed tool job records the state', toolFirst.state, 'claimed')
   expectTrue('a claimed tool job records when it was claimed', typeof toolFirst.claimedAt === 'number')
@@ -300,6 +313,7 @@ try {
   store.markPrinting(toolSecond.finishToken)
   clock += 1
   const toolThird = store.create(jobInput('tool-third', 'tool'))
+  store.markReady(toolThird.id)
   expectEqual('a printing tool job also blocks the next claim', store.claimToolJob(), null)
   store.finish(toolSecond.finishToken, PDF)
   expectTrue('the blocked job is claimable once the printing job finishes',
@@ -315,16 +329,19 @@ try {
 
   const expiredStore = createPrintJobs({ now: () => clock })
   const late = expiredStore.create(jobInput('late', 'tool'))
+  expiredStore.markReady(late.id)
   clock += 120_001
   expectEqual('claimToolJob expires overdue work before claiming', expiredStore.claimToolJob(), null)
   expectEqual('the overdue tool job is expired', late.state, 'expired')
 
   const failedStore = createPrintJobs({ now: () => clock })
   const failedTool = failedStore.create(jobInput('failed', 'tool'))
+  failedStore.markReady(failedTool.id)
   failedStore.fail(failedTool.id, 'client-error')
   expectEqual('claimToolJob skips a failed tool job', failedStore.claimToolJob(), null)
   const finishedStore = createPrintJobs({ now: () => clock })
   const finishedTool = finishedStore.create(jobInput('finished', 'tool'))
+  finishedStore.markReady(finishedTool.id)
   finishedStore.finish(finishedTool.finishToken, PDF)
   expectEqual('claimToolJob skips a finished tool job', finishedStore.claimToolJob(), null)
 
@@ -333,6 +350,7 @@ try {
   mixedStore.claimNext()
   mixedStore.markPrinting(uiBusy.finishToken)
   const toolAfterUi = mixedStore.create(jobInput('tool-after-ui', 'tool'))
+  mixedStore.markReady(toolAfterUi.id)
   expectTrue('an active UI job never blocks a tool claim',
     mixedStore.claimToolJob() === toolAfterUi)
 
@@ -361,6 +379,7 @@ try {
 
   const activePresence = createPrintJobs({ now: () => presenceClock })
   const activeJob = activePresence.create(jobInput('active', 'tool'))
+  activePresence.markReady(activeJob.id)
   activePresence.claimToolJob()
   presenceClock += 60_000
   expectTrue('a claimed tool job counts as a present client', activePresence.presence.isPresent())
@@ -371,6 +390,7 @@ try {
 
   const failedPresence = createPrintJobs({ now: () => presenceClock })
   const failedActive = failedPresence.create(jobInput('failed-active', 'tool'))
+  failedPresence.markReady(failedActive.id)
   failedPresence.claimToolJob()
   failedPresence.fail(failedActive.id, 'client-error')
   expectEqual('a failed tool job stops counting as presence', failedPresence.presence.isPresent(), false)
@@ -398,6 +418,85 @@ try {
       chooseToolEngine(input), expected)
   }
 
+  expectEqual('the broker presence wait defaults to 10 s', TOOL_PRESENCE_WAIT_MS, 10_000)
+
+  // Browser mode does not wait for a client.
+  const browserWaitStarted = Date.now()
+  const browserNoWait = await exportTool({ path: source }, {
+    printEngine: 'browser',
+    presenceWaitMs: 5000,
+    browserAvailable: true,
+    printBrowser: fakeBrowserPrinter([]),
+  })
+  expectEqual('browser mode ignores the presence wait', browserNoWait.engine, 'browser')
+  expectTrue('browser mode returns before the presence window',
+    Date.now() - browserWaitStarted < 1000)
+
+  // A client that appears after the call starts is used.
+  const latePresence = trackJobs()
+  const latePresenceRoutes = mountRoutes({ jobs: latePresence.jobs })
+  const latePresenceCalls = []
+  const latePresenceSettled = settle(() => exportTool({ path: source }, {
+    jobs: latePresence.jobs,
+    printEngine: 'auto',
+    browserAvailable: true,
+    printBrowser: fakeBrowserPrinter(latePresenceCalls),
+    presenceWaitMs: 600,
+  }))
+  await sleep(80)
+  latePresence.jobs.presence.record('late-client')
+  expectTrue('a late client moves the tool to the broker',
+    await waitFor(() => latePresence.created.length === 1, 1000))
+  const latePoll = await callRoute(latePresenceRoutes, NEXT_JOB_PATH,
+    fakeRequest('GET', `${NEXT_JOB_PATH}?wait=2`))
+  await finishExport({ finishToken: latePoll.payload.finishToken, pdfBytes: PDF }, { jobs: latePresence.jobs })
+  const lateOutcome = await latePresenceSettled
+  expectEqual('the late-client tool reports dsh', lateOutcome.value?.engine, 'dsh')
+  expectEqual('the late client never starts the browser', latePresenceCalls.length, 0)
+
+  // The presence wait is bounded, then auto falls back to the browser.
+  const noClientAutoRun = trackJobs()
+  const autoWaitStarted = Date.now()
+  const autoWaited = await exportTool({ path: source }, {
+    jobs: noClientAutoRun.jobs,
+    printEngine: 'auto',
+    browserAvailable: true,
+    printBrowser: fakeBrowserPrinter([]),
+    presenceWaitMs: 180,
+  })
+  expectEqual('auto uses the browser after the presence wait', autoWaited.engine, 'browser')
+  expectTrue('auto spends the presence window before falling back', Date.now() - autoWaitStarted >= 160)
+  expectEqual('the empty presence wait creates no broker job', noClientAutoRun.jobs.claimToolJob(), null)
+
+  const noClientDshRun = trackJobs()
+  const dshWaitStarted = Date.now()
+  const dshWaited = await capture(() => exportTool({ path: source }, {
+    jobs: noClientDshRun.jobs,
+    printEngine: 'dsh',
+    presenceWaitMs: 160,
+  }))
+  expectEqual('dsh reports client-required after the presence wait', dshWaited?.code, 'client-required')
+  expectTrue('dsh spends the presence window before refusing', Date.now() - dshWaitStarted >= 140)
+
+  // Abort during the wait is observed.
+  const abortWaitRun = trackJobs()
+  const abortWaitController = new AbortController()
+  const abortWaitStarted = Date.now()
+  const abortWaitSettled = settle(() => exportTool({ path: source }, {
+    jobs: abortWaitRun.jobs,
+    printEngine: 'auto',
+    browserAvailable: true,
+    presenceWaitMs: 5000,
+    signal: abortWaitController.signal,
+    printBrowser: fakeBrowserPrinter([]),
+  }))
+  await sleep(50)
+  abortWaitController.abort()
+  const abortWaitOutcome = await abortWaitSettled
+  expectEqual('aborting the presence wait rejects with AbortError', abortWaitOutcome.error?.name, 'AbortError')
+  expectTrue('aborting the presence wait returns promptly', Date.now() - abortWaitStarted < 1000)
+  expectEqual('aborting the presence wait creates no job', abortWaitRun.jobs.claimToolJob(), null)
+
   // 4. Tool execution: browser, client-required, no-printer, broker.
   const browserCalls = []
   const browserResult = await exportTool({ path: source }, {
@@ -415,6 +514,7 @@ try {
     jobs: noClientJobs,
     printEngine: 'dsh',
     browserAvailable: true,
+    presenceWaitMs: 0,
   }))
   expectEqual('dsh without a client reports client-required', clientRequired?.code, 'client-required')
   expectEqual('dsh without a client creates no print job', noClientJobs.claimToolJob(), null)
@@ -426,6 +526,7 @@ try {
     printEngine: 'auto',
     browserAvailable: true,
     printBrowser: fakeBrowserPrinter(autoBrowserCalls),
+    presenceWaitMs: 0,
   })
   expectEqual('auto without a client falls back to the browser', autoBrowser.engine, 'browser')
   expectEqual('auto without a client creates no broker job', autoBrowserJobs.claimToolJob(), null)
@@ -437,6 +538,7 @@ try {
     printEngine: 'auto',
     browserAvailable: false,
     printBrowser: fakeBrowserPrinter(noPrinterCalls),
+    presenceWaitMs: 0,
   }))
   expectEqual('auto without a client or browser reports no-printer', noPrinter?.code, 'no-printer')
   expectEqual('no-printer never starts the browser', noPrinterCalls.length, 0)
@@ -505,6 +607,47 @@ try {
   expectEqual('the tool target stays beside the source', brokerOutcome.value?.pdfPath, target)
   const printPageAfter = await fetch(brokerPoll.payload.printUrl).catch(() => null)
   expectTrue('finish closes the print server', printPageAfter === null)
+
+  // A tool job is created before its loopback server has an address. The broker
+  // must not hand it out until the print URL exists; otherwise the client would
+  // receive a payload without printUrl and leave the job claimed until timeout.
+  const readyRun = trackJobs({ timeoutMs: 500 })
+  const readyRoutes = mountRoutes({ jobs: readyRun.jobs })
+  readyRun.jobs.presence.record('client-a')
+  let releaseServer = null
+  const serverGate = new Promise(resolveGate => { releaseServer = resolveGate })
+  const readySettled = settle(() => exportTool({ path: source }, {
+    jobs: readyRun.jobs,
+    printEngine: 'dsh',
+    presenceWaitMs: 0,
+    startPrintServer: async ({ assetToken }) => {
+      await serverGate
+      return {
+        url: `http://127.0.0.1:9/p/${assetToken}/`,
+        close: async () => {},
+      }
+    },
+  }))
+  expectTrue('the delayed-server job is created before its server',
+    await waitFor(() => readyRun.created.length === 1, 1000))
+  expectEqual('a new tool job starts unready', readyRun.created[0].ready, false)
+  const unreadyPoll = await callRoute(readyRoutes, NEXT_JOB_PATH,
+    fakeRequest('GET', `${NEXT_JOB_PATH}?wait=0`))
+  expectEqual('an unready tool job is never claimed', unreadyPoll.status, 204)
+  expectEqual('an unready tool job stays prepared', readyRun.created[0].state, 'prepared')
+  releaseServer()
+  expectTrue('the job becomes ready after the server starts',
+    await waitFor(() => readyRun.created[0].ready === true, 1000))
+  expectTrue('the ready job has a print url', typeof readyRun.created[0].printUrl === 'string')
+  const readyPoll = await callRoute(readyRoutes, NEXT_JOB_PATH,
+    fakeRequest('GET', `${NEXT_JOB_PATH}?wait=0`))
+  expectEqual('the ready tool job is claimable', readyPoll.status, 200)
+  expectEqual('the ready payload carries the print url',
+    typeof readyPoll.payload?.printUrl, 'string')
+  await failPrintJob({ finishToken: readyPoll.payload.finishToken, reason: 'print-failed' },
+    { jobs: readyRun.jobs })
+  const readyOutcome = await readySettled
+  expectEqual('the delayed-server job fails through the broker', readyOutcome.error?.code, 'print-failed')
 
   // A failed client print: dsh mode reports the failure; auto may fall back
   // only for the allowlisted reasons.
