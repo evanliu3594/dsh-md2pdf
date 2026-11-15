@@ -1,7 +1,7 @@
 # v2 verification record
 
 Branch: `v2-dsh-printing`
-Commit under test: `6baa058` (2026-11-15)
+Commit under test: `b763d3a` (2026-11-15)
 Design: `docs/DESIGN.md`
 
 This file records the automatic matrix and the manual gates. A row marked
@@ -10,7 +10,7 @@ result line.
 
 ## Automatic matrix
 
-`npm test` runs thirteen suites. Counts on 2026-11-15 at `6baa058`:
+`npm test` runs thirteen suites. Counts on 2026-11-15 at `b763d3a`:
 
 | Suite | Node 26.13.1 | Node 24.21.0 |
 |---|---|---|

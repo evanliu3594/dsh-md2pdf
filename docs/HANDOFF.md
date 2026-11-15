@@ -2,7 +2,7 @@
 
 Branch: v2-dsh-printing
 Base: 15dfbd9 (main at the branch point)
-Head at handoff: 6baa058 (27 commits)
+Head at handoff: b763d3a (28 commits)
 Date: 2026-11-15
 Design: docs/DESIGN.md
 Verification: docs/V2-VERIFICATION.md
@@ -44,11 +44,11 @@ S1 evidence: docs/S1-CHECKLIST.md
 
 ## Automatic verification
 
-Thirteen suites, green on Node 26.13.1 and Node 24.21.0 at 6baa058:
+Thirteen suites, green on Node 26.13.1 and Node 24.21.0 at b763d3a:
 
-    195 render / 75 document config / 123 print options / 107 presets
-     23 previews / 70 dsh preview / 5 printer / 42 print server
-     80 print jobs / 137 export / 95 after export / 283 broker / 105 client UI
+    195 render / 80 document config / 123 print options / 116 presets
+     25 previews / 70 dsh preview / 5 printer / 42 print server
+     80 print jobs / 139 export / 95 after export / 294 broker / 107 client UI
 
 list-audit: failures: builtin=0 markdown(old)=0 gfm+math=0.
 node --check passes on every changed JS file; git diff --check is clean.
@@ -101,9 +101,26 @@ docs/V2-VERIFICATION.md.
 ## Review trail
 
 Per-task reviews and fix rounds are in .superpowers/sdd/PLAN/ (local-only):
-task-7-review.md, task-8-review.md, task-9-review.md, task-9-review.md, and the
-task reports. A whole-branch final review was dispatched over 15dfbd9..3e7bed7;
-record its verdict here before merging.
+task-7-review.md, task-8-review.md, task-9-review.md, and the task reports.
+
+The whole-branch final review over 15dfbd9..3e7bed7 found 0 Critical and 4
+Important findings; all four are fixed at the head:
+
+- Windows system open: explorer.exe replaces cmd.exe start, so a file name
+  containing & is never parsed as a shell command.
+- Unsupported @page margins: !important is taken as the value; auto, calc, px
+  and similar forms fall back to the uniform 18 mm box with a warning; one bad
+  preset no longer blanks the preview route.
+- Bundle import conflicts by id or by name; duplicate names inside a bundle are
+  refused.
+- A failed UI DSH print reports the job failure, so the Host closes the job and
+  its loopback server before the browser fallback runs.
+- Tests now cover the fence and method table of every route, the name
+  conflict, the margin fallback, and the preview isolation.
+
+The final-review commit also records two limitations honestly: the browser
+fallback does not run afterExport, and jobTimeoutMs/allowRemoteImages are not
+wired in v2. Manual S1/S2/S3/S4 and the Windows matrix remain the only gates.
 
 ## Merge and release
 
