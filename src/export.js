@@ -66,6 +66,9 @@ const STAGING_ID = /^[a-z0-9-]{1,64}$/
 /** How often the tool watches a brokered job before checking again. */
 const TOOL_WATCH_MS = 100
 
+/** How long a cancelled tool waits for a finish write it already started. */
+const FINISH_SETTLE_MS = 30_000
+
 /**
  * How long an agent tool waits for a connected client before choosing an
  * engine. This is a client-presence check, not a queue-idle check.
@@ -461,6 +464,10 @@ async function commitFinish(job, finishToken, pdfBytes, jobs, options) {
   if (job.state !== 'prepared' && job.state !== 'claimed' && job.state !== 'printing') {
     return applyAfterExport(job, jobs.finish(finishToken, pdfBytes), options)
   }
+  // Take the write lease before the first await. The broker poll sweeps expiry
+  // every 100 ms, so without it a slow rename could land after the job expired
+  // and leave a written PDF behind a timeout result.
+  jobs.beginFinish(finishToken)
 
   const verified = verifyPdf(pdfBytes)
   if (!verified.ok) {
@@ -475,7 +482,7 @@ async function commitFinish(job, finishToken, pdfBytes, jobs, options) {
   } catch (error) {
     const reason = error instanceof PdfError ? error.code : 'write-failed'
     try {
-      jobs.fail(job.id, reason)
+      jobs.abandonFinish(job.id, reason)
     } catch {
       // Keep the write error; the job state is already unusable either way.
     }
@@ -990,7 +997,8 @@ async function waitForToolJob(jobs, jobId, { signal } = {}) {
     // `claimedAt` survives the transition out of `claimed`, so a job that timed
     // out after a client took it can never be mistaken for an unclaimed one.
     if (job.claimedAt !== undefined) claimed = true
-    if (job.state === 'claimed' || job.state === 'printing' || job.state === 'finished') claimed = true
+    if (job.state === 'claimed' || job.state === 'printing'
+      || job.state === 'finishing' || job.state === 'finished') claimed = true
     const outcome = toolJobOutcome(job)
     if (outcome !== null) return { ...outcome, claimed }
     if (signal !== undefined && signal.aborted === true) return { kind: 'aborted', claimed }
@@ -999,10 +1007,42 @@ async function waitForToolJob(jobs, jobId, { signal } = {}) {
       jobs.expire(now)
       const swept = jobs.get(jobId)
       const ended = swept === null ? null : toolJobOutcome(swept)
-      return { ...(ended ?? { kind: 'expired' }), claimed }
+      if (ended !== null) return { ...ended, claimed }
+      // A commit owns the job. The finish grace protects it from the sweep, so
+      // wait for the write to settle instead of reporting a timeout it would
+      // contradict.
+      if (swept !== null && swept.state === 'finishing') {
+        await new Promise(resolveWait => { setTimeout(resolveWait, TOOL_WATCH_MS) })
+        continue
+      }
+      return { kind: 'expired', claimed }
     }
     await new Promise(resolveWait => { setTimeout(resolveWait, Math.min(TOOL_WATCH_MS, job.deadline - now)) })
   }
+}
+
+/**
+ * Wait for a write lease to settle into a terminal state.
+ *
+ * Once a commit starts it owns the job, so cancellation must not report a
+ * result the written file contradicts. The wait is bounded; a write that never
+ * settles falls through to the normal abandonment path.
+ * @param jobs - the job store that owns the job.
+ * @param jobId - the job whose write is in flight.
+ * @returns the terminal outcome, or null when the job stopped finishing or the
+ *   window closed.
+ */
+async function waitForFinishingJob(jobs, jobId) {
+  const deadline = Date.now() + FINISH_SETTLE_MS
+  while (Date.now() < deadline) {
+    const job = jobs.get(jobId)
+    if (job === null) return { kind: 'failed', reason: 'bad-request' }
+    const outcome = toolJobOutcome(job)
+    if (outcome !== null) return outcome
+    if (job.state !== 'finishing') return null
+    await new Promise(resolveWait => { setTimeout(resolveWait, TOOL_WATCH_MS) })
+  }
+  return null
 }
 
 /**
@@ -1144,6 +1184,13 @@ export async function exportTool(request = {}, options = {}) {
     throw error
   }
   if (outcome.kind === 'aborted') {
+    // A commit that already started owns the job. Report its result rather than
+    // cancelling a call whose PDF is being written.
+    const live = jobs.get(jobId)
+    if (live !== null && live.state === 'finishing') {
+      const settled = await waitForFinishingJob(jobs, jobId)
+      if (settled !== null && settled.kind === 'finished') return toolResultOf(settled.result)
+    }
     await abandonToolJob(jobs, jobId, 'client-error')
     throw abortErrorOf(signal)
   }

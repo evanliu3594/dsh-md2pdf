@@ -1041,6 +1041,63 @@ try {
   expectEqual('a later finish refuses a failed job', finishSecondOutcome.error?.code, 'state-conflict')
   expectEqual('a refused finish writes no PDF', (await readdir(work)).includes('race2.pdf'), false)
 
+  // 6b. A commit owns its job once the write starts. The broker poll sweeps
+  // expiry every 100 ms, so without a lease a slow rename can land after the
+  // job expired and leave a written PDF behind a timeout result.
+  const leaseShop = createPrintJobs({ timeoutMs: 60_000 })
+  const leaseJob = leaseShop.create({ owner: 'tool' })
+  expectEqual('a new job is not finishing', leaseJob.state, 'prepared')
+  leaseShop.beginFinish(leaseJob.finishToken)
+  expectEqual('a finish lease moves the job to finishing', leaseJob.state, 'finishing')
+  expectEqual('an expiry sweep skips a finishing job', leaseShop.expire(leaseJob.finishingAt + 1).length, 0)
+  expectEqual('a finishing job stays open', leaseJob.state, 'finishing')
+  const leaseFail = await capture(async () => leaseShop.fail(leaseJob.finishToken, 'client-error'))
+  expectEqual('a fail cannot end a finishing job', leaseFail?.code, 'state-conflict')
+  expectEqual('a finishing job still commits', leaseShop.finish(leaseJob.finishToken, PDF).state, 'finished')
+
+  const graceShop = createPrintJobs({ timeoutMs: 60_000, finishGraceMs: 50 })
+  const graceJob = graceShop.create({})
+  graceShop.beginFinish(graceJob.finishToken)
+  expectEqual('a fresh write lease is protected',
+    graceShop.expire(graceJob.finishingAt + 10).length, 0)
+  expectEqual('a stuck write lease expires after the grace',
+    graceShop.expire(graceJob.finishingAt + 60).length, 1)
+  expectEqual('the stuck job ends expired', graceJob.state, 'expired')
+
+  const abandonShop = createPrintJobs({ timeoutMs: 60_000 })
+  const abandonJob = abandonShop.create({})
+  abandonShop.beginFinish(abandonJob.finishToken)
+  expectEqual('the finish owner can fail a starting job',
+    abandonShop.abandonFinish(abandonJob.id, 'write-failed').state, 'failed')
+  expectEqual('a failed starting job refuses a late finish',
+    (await capture(async () => abandonShop.finish(abandonJob.finishToken, PDF)))?.code, 'state-conflict')
+
+  await copyFile(source, join(work, 'lease.md'))
+  const leaseFile = join(work, 'lease.md')
+  const leaseTarget = join(work, 'lease.pdf')
+  const commitShop = createPrintJobs({ timeoutMs: 60_000 })
+  let leaseCalls = 0
+  const sweepOnLease = {
+    ...commitShop,
+    beginFinish(token) {
+      leaseCalls += 1
+      const job = commitShop.beginFinish(token)
+      // Stand in for a broker poll that sweeps expiry while the staging write
+      // is in flight.
+      commitShop.expire(Date.now())
+      return job
+    },
+  }
+  const leasePrepared = await prepareExport({ path: leaseFile, owner: 'tool' }, { jobs: sweepOnLease })
+  const leaseResult = await finishExport(
+    { finishToken: leasePrepared.finishToken, pdfBytes: PDF },
+    { jobs: sweepOnLease },
+  )
+  expectEqual('a finish takes the write lease', leaseCalls, 1)
+  expectEqual('a sweep during the write does not expire the job', leaseResult.ok, true)
+  expectEqual('the committed bytes reach the target', (await readFile(leaseTarget)).equals(PDF), true)
+  expectEqual('the leased job ends finished', commitShop.get(leasePrepared.finishToken).state, 'finished')
+
   // 7. The client wiring. The client is a classic script; the checks pin the
   // source contract and leave the real DSH window to the manual run.
   const client = await readFile(join(here, '..', 'client.js'), 'utf8')

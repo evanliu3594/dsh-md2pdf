@@ -11,10 +11,17 @@
  * State transitions:
  *
  * ```
- * prepared -> claimed -> printing -> finished
- * prepared/claimed/printing -> failed
+ * prepared -> claimed -> printing -> finishing -> finished
+ * prepared/claimed/printing/finishing -> failed
  * prepared/claimed/printing -> expired
+ * finishing -> expired (only after the finish grace)
  * ```
+ *
+ * `finishing` is the write lease a commit takes before it touches the target.
+ * The broker poll sweeps expiry every 100 ms, so without the lease a slow
+ * rename could land after the deadline and leave a written PDF behind a
+ * timeout result. The lease keeps `fail` out and stops the deadline sweep; a
+ * write that never settles still expires once the grace has passed.
  *
  * `failed` is terminal for committing. The design treats a client error or an
  * invalid PDF payload as the end of that job, so `finish` refuses a failed job
@@ -46,6 +53,12 @@ const PDF_TRAILER_BYTES = 2048
 
 /** States whose deadline can still expire them. */
 const OPEN_STATES = new Set(['prepared', 'claimed', 'printing'])
+
+/** State of a job whose finish write is in flight. */
+const FINISHING = 'finishing'
+
+/** How long a started write may run before the deadline sweep expires it. */
+const DEFAULT_FINISH_GRACE_MS = 30_000
 
 /**
  * Reasons a client may report through the broker's fail route.
@@ -106,16 +119,19 @@ function completePdf(bytes) {
 /**
  * Create an in-memory print-job store.
  *
- * @param options - clock, deadline, and presence window.
+ * @param options - clock, deadline, presence window, and finish grace.
  * @param options.now - clock function in milliseconds; defaults to `Date.now`.
  * @param options.timeoutMs - how long a job may live; defaults to 120000.
  * @param options.presenceMs - how long a client record counts; defaults to 10000.
+ * @param options.finishGraceMs - how long a started write is protected; defaults
+ *   to 30000.
  * @returns the job operations, transitions, presence probe, and close function.
  */
 export function createPrintJobs({
   now = Date.now,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   presenceMs = DEFAULT_PRESENCE_MS,
+  finishGraceMs = DEFAULT_FINISH_GRACE_MS,
 } = {}) {
   const clock = typeof now === 'function' ? now : Date.now
   const jobs = new Map()
@@ -248,6 +264,7 @@ export function createPrintJobs({
     if (job.state === 'expired') throw jobError('job-timeout', 504, 'this print job has expired')
     if (job.state === 'failed') throw jobError('state-conflict', 409, 'this print job has failed')
     if (job.state === 'finished') throw jobError('state-conflict', 409, 'this print job already finished')
+    if (job.state === FINISHING) throw jobError('state-conflict', 409, 'this print job is being written')
     if (job.state === 'prepared') throw jobError('state-conflict', 409, 'claim the job before printing')
     job.state = 'printing'
     return job
@@ -276,6 +293,51 @@ export function createPrintJobs({
    * @throws {Error} with `code` and `status` when the job cannot fail.
    */
   function fail(idOrToken, reason = 'client-error') {
+    if (typeof reason !== 'string' || reason === '') {
+      throw new TypeError('failure reason must be text')
+    }
+    const job = get(idOrToken)
+    if (job === null) throw jobError('bad-request', 400, 'unknown print job')
+    if (job.state === 'expired') throw jobError('job-timeout', 504, 'this print job has expired')
+    if (job.state === 'finished') throw jobError('state-conflict', 409, 'this print job already finished')
+    if (job.state === FINISHING) throw jobError('state-conflict', 409, 'this print job is being written')
+    if (job.state === 'failed') return job
+    return markFailed(job, reason)
+  }
+
+  /**
+   * Take the write lease for one finish.
+   *
+   * The exporter calls this before the first await of a commit, so a deadline
+   * sweep or a client fail cannot end a job whose bytes are already being
+   * written. The lease is short-lived: the same finish commits or abandons it.
+   * @param finishToken - the job's finish secret.
+   * @returns the job in `finishing`, or the finished job on a replay.
+   * @throws {Error} with `code` and `status` when the job cannot be written.
+   */
+  function beginFinish(finishToken) {
+    const job = byFinishToken(finishToken)
+    if (job === null) throw jobError('bad-request', 400, 'unknown finish token')
+    if (job.state === 'expired') throw jobError('job-timeout', 504, 'this print job has expired')
+    if (job.state === 'failed') throw jobError('state-conflict', 409, 'this print job has failed')
+    if (job.state === 'finished') return job
+    job.state = FINISHING
+    job.finishingAt = clock()
+    return job
+  }
+
+  /**
+   * Fail one job from inside its own finish attempt.
+   *
+   * This is the finish owner's exit after the write refused, for example a
+   * locked target. The route-facing `fail` cannot be used here because the
+   * job is in `finishing` and a foreign caller must not end a live write.
+   * @param idOrToken - job id, asset token, or finish token.
+   * @param reason - short machine code for the failure.
+   * @returns the failed job.
+   * @throws {Error} with `code` and `status` when the job cannot fail.
+   */
+  function abandonFinish(idOrToken, reason = 'write-failed') {
     if (typeof reason !== 'string' || reason === '') {
       throw new TypeError('failure reason must be text')
     }
@@ -340,6 +402,13 @@ export function createPrintJobs({
     const at = Number.isFinite(instant) ? instant : clock()
     const expired = []
     for (const job of jobs.values()) {
+      if (job.state === FINISHING) {
+        const started = Number.isFinite(job.finishingAt) ? job.finishingAt : job.deadline
+        if (at - started < finishGraceMs) continue
+        job.state = 'expired'
+        expired.push(job)
+        continue
+      }
       if (!OPEN_STATES.has(job.state)) continue
       if (job.deadline > at) continue
       job.state = 'expired'
@@ -395,7 +464,8 @@ export function createPrintJobs({
     isPresent(instant = clock()) {
       const at = Number.isFinite(instant) ? instant : clock()
       for (const job of jobs.values()) {
-        if (job.owner === 'tool' && (job.state === 'claimed' || job.state === 'printing')) return true
+        if (job.owner === 'tool'
+          && (job.state === 'claimed' || job.state === 'printing' || job.state === FINISHING)) return true
       }
       for (const seenAt of lastSeen.values()) {
         if (at - seenAt < presenceMs) return true
@@ -436,11 +506,12 @@ export function createPrintJobs({
   async function close() {
     lastSeen.clear()
     for (const job of jobs.values()) {
-      if (OPEN_STATES.has(job.state)) job.state = 'expired'
+      if (OPEN_STATES.has(job.state) || job.state === FINISHING) job.state = 'expired'
     }
   }
 
   return {
-    create, claimNext, claimToolJob, markReady, markPrinting, fail, finish, expire, get, presence, close,
+    create, claimNext, claimToolJob, markReady, markPrinting, beginFinish, abandonFinish,
+    fail, finish, expire, get, presence, close,
   }
 }

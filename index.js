@@ -105,6 +105,8 @@ const FAILURE_STATUS = {
   'asset-server-failed': 500,
   'job-timeout': 504,
   'client-required': 503,
+  'client-error': 502,
+  'write-failed': 500,
 }
 
 /**

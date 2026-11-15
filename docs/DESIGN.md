@@ -405,16 +405,18 @@ Host 收到 PDF 字节后：
 状态：
 
 ```
-prepared → claimed → printing → finished
-                    ↘ failed
+prepared → claimed → printing → finishing → finished
+                                   ↘ failed（仅写入方）
 prepared/claimed/printing → expired
+finishing → expired（仅在 finishGraceMs 之后）
 ```
 
 - `prepared`：Host 已渲染，等待客户端。
 - `claimed`：客户端已取走任务。
 - `printing`：客户端已开始打印。
+- `finishing`：写入方已取得写锁，正在写盘。写锁期间外部 `fail` 被拒绝，超时清扫跳过该任务；写入方提交后转 `finished`，写盘失败时由写入方转 `failed`。停在 `finishing` 超过 `finishGraceMs`（默认 30 秒）的任务才允许被清扫成 `expired`。
 - `finished`：PDF 已写盘。
-- `failed`：客户端报告错误或 PDF 校验失败。
+- `failed`：客户端报告错误、PDF 校验失败或写盘失败。
 - `expired`：超时，资源服务关闭。
 
 任务字段：`id`、`assetToken`、`finishToken`、`sessionId`、`sourcePath`、`targetPath`、`html`、`assetRoot`、`printOptions`、`state`、`createdAt`、`deadline`、`owner`（`ui` 或 `tool`）。
@@ -438,6 +440,8 @@ Agent 工具结果只返回路径与结果，不打开预览。
 | `file-busy` | 409 | 目标 PDF 被占用，无法替换 |
 | `asset-server-failed` | 500 | 资源服务启动失败 |
 | `pdf-invalid` | 502 | 回传字节不是完整 PDF |
+| `client-error` | 502 | 客户端报告的未分类错误 |
+| `write-failed` | 500 | 临时文件写入失败 |
 
 现有 `no-printer`、`print-failed`、`not-a-pdf`、`empty-output` 保留。
 
