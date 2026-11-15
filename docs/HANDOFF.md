@@ -2,8 +2,10 @@
 
 Branch: v2-dsh-printing
 Base: 15dfbd9 (main at the branch point)
-Code head: 4343056 (32 commits); this record is one docs commit later
+Code head: 4343056 (32 commits)
+Post-merge: 50e7cee (settings order), 71a07ac (local ignore rules)
 Merged: 02c0344 (v2-dsh-printing into main, 2026-11-15)
+Pushed: origin/main on 2026-11-15
 Date: 2026-11-15
 Design: docs/DESIGN.md
 Verification: docs/V2-VERIFICATION.md
@@ -188,4 +190,4 @@ S2 also found two print-option defects; both are fixed at 4343056:
 3. Keep the version at 0.1.0 until release. No runtime dependency was added.
 4. If the samples or docs images should reflect the new renderer output,
    regenerate them with a one-off MD2PDF_HOME before publishing.
-5. Push only after the user confirms; the branch is local so far.
+5. Pushed to origin/main on 2026-11-15; this record follows the merge.
