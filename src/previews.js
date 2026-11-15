@@ -91,8 +91,14 @@ export async function buildPreviews() {
   const { selected, presets } = await listPresets()
   const built = {}
   for (const preset of presets) {
-    const stored = await readPreset(preset.id)
-    built[preset.id] = await previewHtml(stored.css, stored.page ?? {})
+    try {
+      const stored = await readPreset(preset.id)
+      built[preset.id] = await previewHtml(stored.css, stored.page ?? {})
+    } catch {
+      // One unusable preset must not blank the whole settings page. Its card
+      // shows the default box instead.
+      built[preset.id] = await previewHtml('', {})
+    }
   }
   return { presets: built, selected }
 }

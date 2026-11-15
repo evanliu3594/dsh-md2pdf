@@ -27,7 +27,7 @@ import { DEFAULT_PAGE } from './document.js'
 import { baseHrefOf, renderDocument } from './html-build.js'
 import { parseFrontmatter, splitFrontmatter } from './markdown.js'
 import { openPath } from './opener.js'
-import { pageMarginsInches, pageOverrideCss } from './page-css.js'
+import { pageMarginInfo, pageOverrideCss } from './page-css.js'
 import { describeEngines, PdfError, printBrowser, verifyPdf } from './pdf.js'
 import { buildPrintOptions } from './print-options.js'
 import { CLIENT_FAILURE_REASONS, createPrintJobs } from './print-jobs.js'
@@ -598,17 +598,21 @@ export async function prepareExport(request = {}, options = {}) {
   const configWarnings = Array.isArray(options.configWarnings)
     ? options.configWarnings.filter(warning => typeof warning === 'string')
     : []
+  // A preset is a user file: an unsupported @page form falls back to the
+  // uniform default box and is reported instead of refusing the export.
+  const marginInfo = pageMarginInfo(rendered.html)
   const warnings = [
     ...configWarnings,
     ...mergeWarnings,
     ...paperWarnings,
+    ...(marginInfo.warning === '' ? [] : [marginInfo.warning]),
     ...await scanAssets(rendered.html, directory),
   ]
 
   // Header, footer, page numbers, and the outline come from the merged document
   // config; margins come from the final @page box, never from a fixed default.
   const printOptions = {
-    ...buildPrintOptions(document, pageMarginsInches(rendered.html), {
+    ...buildPrintOptions(document, marginInfo.margins, {
       title: frontmatterText(frontmatter, 'title') || stem,
       author: frontmatterText(frontmatter, 'author'),
       date: frontmatterText(frontmatter, 'date'),

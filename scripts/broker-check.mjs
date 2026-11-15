@@ -120,7 +120,8 @@ const { CLIENT_FAILURE_REASONS, createPrintJobs } = await import('../src/print-j
 const indexModule = await import('../index.js')
 
 const {
-  FAIL_JOB_PATH, NEXT_JOB_PATH, PRESETS_PATH, SETTINGS_PATH, TEST_PRINT_PATH, brokerWaitSeconds,
+  CAPABILITY_PATH, EXPORT_PATH, FAIL_JOB_PATH, FINISH_PATH, NEXT_JOB_PATH, PREPARE_PATH,
+  PRESETS_PATH, PREVIEWS_PATH, SETTINGS_PATH, TEST_PRINT_PATH, brokerWaitSeconds,
 } = indexModule
 
 /**
@@ -1299,6 +1300,30 @@ try {
     settleOutcome.engine, 'dsh')
   expectEqual('the abort-settle target is written',
     (await readFile(join(work, 'abort-settle.pdf'))).equals(PDF), true)
+
+  // 6e. Every route checks the trust fence before anything else, and the
+  // method table is exact. These are the routes the earlier checks did not call.
+  const protectedRoutes = [
+    [PREPARE_PATH, 'POST'],
+    [FINISH_PATH, 'POST'],
+    [EXPORT_PATH, 'POST'],
+    [CAPABILITY_PATH, 'GET'],
+    [PREVIEWS_PATH, 'GET'],
+  ]
+  const fenceRoutes = mountRoutes({}, 403)
+  for (const [path, method] of protectedRoutes) {
+    const answer = await callRoute(fenceRoutes, path, fakeRequest(method, path))
+    expectEqual('the fence refuses ' + path, answer.status, 403)
+  }
+  const methodRoutes = mountRoutes({})
+  for (const [path, method] of protectedRoutes) {
+    const other = method === 'GET' ? 'POST' : 'GET'
+    const answer = await callRoute(methodRoutes, path, fakeRequest(other, path))
+    expectEqual('the method is refused on ' + path, answer.status, 405)
+  }
+  const noJson = await callRoute(methodRoutes, PREPARE_PATH,
+    fakeRequest('POST', PREPARE_PATH, '{}'))
+  expectEqual('prepare requires a JSON body', noJson.status, 415)
 
   // 7. The client wiring. The client is a classic script; the checks pin the
   // source contract and leave the real DSH window to the manual run.

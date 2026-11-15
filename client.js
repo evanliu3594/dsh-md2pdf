@@ -415,6 +415,17 @@ window.__ModuleLoader__.load({
       return error instanceof Error ? error.message : String(error)
     }
 
+    /**
+     * Format one ISO timestamp in the window's local time.
+     * @param iso - an ISO timestamp, or anything else.
+     * @returns a readable local date and time, or the input text when unusable.
+     */
+    function formatTime(iso) {
+      const date = new Date(iso)
+      if (Number.isNaN(date.getTime())) return String(iso ?? '')
+      return date.toLocaleString()
+    }
+
     /** Whether one path names a markdown source. */
     function isMarkdownPath(path) {
       return typeof path === 'string' && MARKDOWN_PATTERN.test(path)
@@ -1964,12 +1975,21 @@ window.__ModuleLoader__.load({
               : `HTTP ${response.status}`
             throw namedError(code, message)
           }
-          const result = await runPrintJob({
-            printUrl: payload.printUrl,
-            finishToken: payload.finishToken,
-            printOptions: payload.printOptions,
-            sessionId: input.sessionId,
-          })
+          let result
+          try {
+            result = await runPrintJob({
+              printUrl: payload.printUrl,
+              finishToken: payload.finishToken,
+              printOptions: payload.printOptions,
+              sessionId: input.sessionId,
+            })
+          } catch (error) {
+            // A failed UI guest must end the Host job now: otherwise its
+            // one-shot server waits out the full deadline while the browser
+            // fallback runs.
+            await reportBrokerFailure(payload.finishToken, error?.code)
+            throw error
+          }
           return { result, finishToken: payload.finishToken }
         }
 
@@ -2669,7 +2689,7 @@ window.__ModuleLoader__.load({
               await act({ action: 'restore-history', id: selected, name })
               await load()
               await loadPreviews()
-              const time = String(savedAt ?? '').replace('T', ' ').slice(0, 16)
+              const time = formatTime(savedAt)
               setStatus({ kind: 'ok', text: t('settings.historyRestored', { time }) })
               const payload = await act({ action: 'list-history', id: selected })
               setHistory(Array.isArray(payload.history) ? payload.history : [])
@@ -2887,8 +2907,7 @@ window.__ModuleLoader__.load({
                   className: 'md2pdf-row',
                   'data-history': entry.name,
                 },
-                h('span', { className: 'md2pdf-path' },
-                  String(entry.savedAt).replace('T', ' ').slice(0, 16)),
+                h('span', { className: 'md2pdf-path' }, formatTime(entry.savedAt)),
                 h('button', {
                   type: 'button',
                   className: 'md2pdf-btn',

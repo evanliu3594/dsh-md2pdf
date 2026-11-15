@@ -82,6 +82,12 @@ try {
   // A stylesheet passed directly is rendered as given.
   const direct = await previewHtml('body { color: red }')
   expectTrue('direct stylesheet rendered', direct.includes('body { color: red }'))
+
+  // One unusable preset must not blank the whole preview route.
+  const broken = await savePreset({ name: 'Broken page', css: '@page { margin: auto; }' })
+  const resilient = await buildPreviews()
+  expectEqual('a bad preset still yields a preview', typeof resilient.presets[broken.id], 'string')
+  expectEqual('every preview survives one bad preset', Object.keys(resilient.presets).length, 4)
 } finally {
   await rm(home, { recursive: true, force: true, maxRetries: 3 }).catch(() => {})
 }

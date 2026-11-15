@@ -200,7 +200,7 @@ Client 侧的 DSH 适配器不进入 Host。能力上报分成两段：
 
 任一高优先级来源提供显式字段时，Host 在预设 CSS 之后追加对应的 `@page`/`body` 规则。只改 `fontSize` 时不要输出 `@page` 边距；只改 `marginMm` 时不要输出纸张尺寸。全部缺省时，预设 CSS 的 `@page` 是权威。内置国标预设不写 `page` 元数据，避免公文 37/26/35/28 mm 被默认 18 mm 覆盖。
 
-v2 只支持一个统一页框：`@page` 的 `size` 与 `margin`（1–4 个值）。不支持 `:first`、`:left`、`:right`、命名页、`margin-top` 等长写，也不支持用 `!important` 改页框。预设使用这些写法时，DSH 路径按统一页框打印并给出警告；浏览器回退保持浏览器自己的行为。
+v2 只支持一个统一页框：`@page` 的 `size` 与可转换的 `margin`（1–4 个长度值）。`margin` 值可带 `!important`，只取长度本身。`:first`、`:left`、`:right`、命名页、`margin-top` 等长写、`auto`、`calc()` 或 px 等无法转换的写法，DSH 路径退回默认统一页框（18 mm）并把原因写进 `warnings`；浏览器回退保持浏览器自己的行为。预览路由逐个预设隔离，一个坏预设不会清空整页缩略图。
 
 ### front matter
 
@@ -259,7 +259,7 @@ v2 的顺序：
 3. 页面覆盖层（显式 `page` 时）。
 4. 打印页面附加层（页眉页脚占位、目录、分页）。
 
-用户 CSS 的 `</style` 继续转义。页面覆盖层只包含 `@page` 与 `body` 的字号/行高，不重写预设的其它规则。
+用户 CSS 的 `</style` 继续转义。页面覆盖层只包含 `@page` 与 `body` 的字号，不重写预设的其它规则。
 
 ### 预设库 v2
 
@@ -383,7 +383,7 @@ Host 在 `src/print-options.js` 生成参数，Client 原样转发；参数只�
 页眉页脚模板由 Host 生成并转义：
 
 - 页码页脚默认居中，作用于所有页；v2 不做奇偶交替。
-- 页脚支持 `{page}`、`{total}`、`{title}`、`{author}`、`{date}`。
+- 页脚支持 `{page}`、`{total}`、`{title}`、`{author}`、`{date}`。`{date}` 取 front matter 的 `date`，没有时用 Host 本地当天。
 - 页眉支持同样五个变量；未识别的占位符保持字面文本，已识别但没有取值的变量渲染为空。
 - 模板内联字体与字号；不加载外部资源。
 - `generateDocumentOutline` 用标题生成书签；标题需要稳定 id 时由渲染器补 slug。
@@ -600,7 +600,9 @@ document.fonts.check('16px "Family"', 'A')
 | `allowRemoteImages` | false | 是否允许远程图片 |
 | `jobTimeoutMs` | 120000 | 打印任务超时 |
 
-继续使用 `browserPath`、`pandocPath`、`renderer`、`timeoutMs`。`engine` 字段保留兼容：`electron` 映射为 `auto` 并记录警告。
+继续使用 `browserPath`、`pandocPath`、`renderer`、`timeoutMs`。`engine` 字段保留兼容：`electron` 按 `auto` 处理。
+
+v2 实现尚未接通两项字段：`jobTimeoutMs` 仍固定 120 秒，`allowRemoteImages` 仍为关闭（远程图片被 CSP 拦截）。两项保留在配置表中，供后续版本接入。
 
 环境变量：
 
@@ -613,9 +615,9 @@ document.fonts.check('16px "Family"', 'A')
 
 - `presets.json` v1 → v2：补 `version`、`description`；`page` 只在用户保存页面设置时添加；CSS 不动；写回 v2；测试覆盖。旧预设不加 `page`，版式不变。
 - 旧 `settings.json`/`custom.css` 迁移保留。
-- `engine: electron` 兼容映射；不再有 Host Electron 打印路径。
+- `engine: electron` 兼容映射为 `auto`；不再有 Host Electron 打印路径。
 - 现有 `/md2pdf/export` 请求与响应保持；新增字段向后兼容。
-- `md2pdf_export` 工具参数保持 `path` 必填；新增可选 `preset`、`page`；结果新增 `engine`、`preset`、`page`。
+- `md2pdf_export` 工具参数只有 `path`；结果含 `engine`，不含 `preset`、`page`。
 - 客户端能力检查兼容没有 `window.dshDesktop` 的 Web GUI。
 - `docs/DESIGN.md`、`README.md`、`AGENTS.md` 在实现后同步；`AGENTS.md` 只留目标、架构、指针与禁止行为。
 

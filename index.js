@@ -68,8 +68,8 @@ export const PREVIEWS_PATH = '/md2pdf/previews'
 /** Request bodies are small JSON objects; anything larger is hostile. */
 const MAX_BODY_BYTES = 1024 * 1024
 
-/** A preset bundle may carry several stylesheets; the route still bounds it. */
-const MAX_PRESET_BODY_BYTES = 4 * 1024 * 1024
+/** A preset bundle may carry many stylesheets; the route still bounds it. */
+const MAX_PRESET_BODY_BYTES = 16 * 1024 * 1024
 
 /** The PDF a client may return in one finish request. */
 const MAX_PDF_BYTES = 64 * 1024 * 1024

@@ -190,6 +190,14 @@ expectTrue('the import asks before overwriting', client.includes("kind: 'import-
 expectTrue('the import input is hidden', client.includes("'data-md2pdf': 'import-file'"))
 expectTrue('the history panel is addressable', client.includes("'data-md2pdf': 'history-panel'"))
 
+// A failed UI print ends the Host job before the browser fallback runs.
+const printStart = client.indexOf('async function printWithDsh')
+const printEnd = printStart < 0 ? -1 : client.indexOf('\n        }', printStart)
+const printSource = printStart < 0 || printEnd < 0 ? '' : client.slice(printStart, printEnd)
+expectTrue('the UI print function exists', printSource !== '')
+expectTrue('a failed UI print reports the job failure',
+  printSource.includes('reportBrokerFailure(payload.finishToken'))
+
 expectTrue('the client imports no DSH client package', !client.includes("require('@deepseek-ai/"))
 
 expectTrue('the test chain runs this check',

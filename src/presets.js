@@ -718,17 +718,19 @@ export async function restorePresetHistory(id, name) {
  * @returns the normalized entry.
  * @throws {PdfError} for an invalid identifier, name, stylesheet, or page.
  */
-function bundleEntry(entry, seen) {
+function bundleEntry(entry, seenIds, seenNames) {
   if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
     throw new PdfError('bad-request', 'every bundle preset must be an object')
   }
   if (typeof entry.id !== 'string' || !PRESET_ID.test(entry.id)) {
     throw new PdfError('bad-request', 'invalid preset id: ' + String(entry.id))
   }
-  if (seen.has(entry.id)) throw new PdfError('bad-request', 'duplicate preset id: ' + entry.id)
-  seen.add(entry.id)
+  if (seenIds.has(entry.id)) throw new PdfError('bad-request', 'duplicate preset id: ' + entry.id)
+  seenIds.add(entry.id)
   const name = typeof entry.name === 'string' ? entry.name.trim() : ''
   if (name === '') throw new PdfError('bad-request', 'preset name is required: ' + entry.id)
+  if (seenNames.has(name)) throw new PdfError('bad-request', 'duplicate preset name: ' + name)
+  seenNames.add(name)
   if (typeof entry.css !== 'string') throw new PdfError('bad-request', 'stylesheet is required: ' + entry.id)
   if (Buffer.byteLength(entry.css, 'utf8') > MAX_CSS_BYTES) {
     throw new PdfError('too-large', 'stylesheet exceeds ' + MAX_CSS_BYTES + ' bytes: ' + entry.id)
@@ -782,8 +784,9 @@ export async function importPresetBundle(bundle, options = {}) {
     throw new PdfError('bad-request', 'unsupported bundle version: ' + String(bundle.version))
   }
   if (!Array.isArray(bundle.presets)) throw new PdfError('bad-request', 'bundle.presets must be an array')
-  const seen = new Set()
-  const entries = bundle.presets.map(entry => bundleEntry(entry, seen))
+  const seenIds = new Set()
+  const seenNames = new Set()
+  const entries = bundle.presets.map(entry => bundleEntry(entry, seenIds, seenNames))
   const overwrite = options.overwrite === true
   return withIndexTransaction(async () => {
     const index = await readOrSeedIndex()
@@ -791,19 +794,23 @@ export async function importPresetBundle(bundle, options = {}) {
     const imported = []
     const warnings = []
     for (const entry of entries) {
-      const position = presets.findIndex(preset => preset.id === entry.id)
+      // Identity is the id, but a user-visible name is also an identity here:
+      // importing a second "Lark" under a new id must ask, not create a twin.
+      let position = presets.findIndex(preset => preset.id === entry.id)
+      if (position < 0) position = presets.findIndex(preset => preset.name.trim() === entry.name)
       if (position >= 0) {
+        const existing = presets[position]
         if (!overwrite) {
-          warnings.push('preset exists: ' + entry.id)
+          warnings.push('preset exists: ' + existing.id)
           continue
         }
-        await writePresetCss(entry.id, entry.css)
-        const updated = { ...presets[position] }
+        await writePresetCss(existing.id, entry.css)
+        const updated = { ...existing }
         if (entry.page !== undefined) updated.page = entry.page
         else delete updated.page
         if (entry.description !== undefined) updated.description = entry.description
         presets[position] = updated
-        imported.push(entry.id)
+        imported.push(existing.id)
         continue
       }
       await writePresetCss(entry.id, entry.css)

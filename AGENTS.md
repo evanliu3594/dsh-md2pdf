@@ -110,7 +110,7 @@ src/proc.js       PATH 查找与子进程执行
 破坏其中任何一条，会丢掉用户数据、安全边界或一次导出。
 
 1. 写入顺序：先 CSS 文件，后 `presets.json`。
-2. 预设标识匹配 `^[a-z0-9-]{1,64}$`。`presetCssPath()` 是唯一把标识拼进路径的地方。
+2. 预设标识匹配 `^[a-z0-9-]{1,64}$`。`presetCssPath()` 与 `historyDirectory()` 是仅有的把标识拼进路径的地方，二者都先校验标识。
 3. 每条路由先调 `ctx.connection.requestRejection()`，再加其它逻辑。
 4. 导出目标只能是 `<源目录>/<源文件名>.pdf`。
 5. 「打开」只接受索引里已知的预设标识，客户端不传路径。
@@ -131,9 +131,9 @@ node scripts/export-cli.mjs samples/sample.md --html out.html
 node scripts/pdf-info.mjs samples/sample.pdf
 ```
 
-当前计数（2026-11-15）：render 195、document config 75、print options 123、presets 107、
-previews 23、dsh preview 70、printer 5、print server 42、print jobs 80、export 137、
-after export 95、broker 283、client UI 105。计数会随功能增长；闸门是「全部通过」。
+当前计数（2026-11-15）：render 195、document config 80、print options 123、presets 116、
+previews 25、dsh preview 70、printer 5、print server 42、print jobs 80、export 139、
+after export 95、broker 294、client UI 107。计数会随功能增长；闸门是「全部通过」。
 `list-audit` 必须打印 `failures: builtin=0 markdown(old)=0 gfm+math=0`。
 
 三条环境事实：`src/` 或 `index.js` 的改动要重启 DSH 才加载；只改 `client.js` 刷新页面即可。打印优先走 DSH 客户端；没有客户端时启动 Chromium 浏览器。测试打印写在 `MD2PDF_HOME/test-print`。

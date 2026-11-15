@@ -1,7 +1,7 @@
 # v2 verification record
 
 Branch: `v2-dsh-printing`
-Commit under test: `783d4a7` (2026-11-15)
+Commit under test: `6baa058` (2026-11-15)
 Design: `docs/DESIGN.md`
 
 This file records the automatic matrix and the manual gates. A row marked
@@ -10,23 +10,23 @@ result line.
 
 ## Automatic matrix
 
-`npm test` runs thirteen suites. Counts on 2026-11-15 at `783d4a7`:
+`npm test` runs thirteen suites. Counts on 2026-11-15 at `6baa058`:
 
 | Suite | Node 26.13.1 | Node 24.21.0 |
 |---|---|---|
 | render | 195/195 | 195/195 |
-| document config | 75/75 | 75/75 |
+| document config | 80/80 | 80/80 |
 | print options | 123/123 | 123/123 |
-| presets | 107/107 | 107/107 |
-| previews | 23/23 | 23/23 |
+| presets | 116/116 | 116/116 |
+| previews | 25/25 | 25/25 |
 | dsh preview | 70/70 | 70/70 |
 | printer | 5/5 | 5/5 |
 | print server | 42/42 | 42/42 |
 | print jobs | 80/80 | 80/80 |
-| export | 137/137 | 137/137 |
+| export | 139/139 | 139/139 |
 | after export | 95/95 | 95/95 |
-| broker | 283/283 | 283/283 |
-| client UI | 105/105 | 105/105 |
+| broker | 294/294 | 294/294 |
+| client UI | 107/107 | 107/107 |
 
 `node scripts/list-audit.mjs` on both runtimes:
 `failures: builtin=0 markdown(old)=0 gfm+math=0`.
@@ -92,7 +92,12 @@ fresh client window.
 ## Known limitations
 
 - The browser fallback cannot print headers, footers, page numbers, or a PDF
-  outline. It also does not return warnings. Only the DSH client path has them.
+  outline. It also does not return warnings or run the afterExport action. Only
+  the DSH client path has them.
+- jobTimeoutMs and allowRemoteImages are documented but not wired in v2: the
+  job deadline stays 120 s and remote images stay blocked by the CSP.
+- A preset bundle is bounded at 16 MiB by the route; a library above that
+  cannot be re-imported.
 - A paper block renders only in the built-in paper preset. Shipped preset CSS
   is seeded once; existing preset files are not rewritten on upgrade, so the
   paper block styling reaches new or restored presets first.

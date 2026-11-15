@@ -79,7 +79,9 @@ export function pageMarginShorthand(html) {
   let margin = null
   for (const match of text.matchAll(PAGE_MARGIN)) margin = match[1]
   if (margin === null) return `${DEFAULT_PAGE.marginMm}mm`
-  const shorthand = margin.trim().replace(/\s+/g, ' ')
+  // `!important` changes the cascade, not the length; the value itself is
+  // printable and must not turn into an unsupported token.
+  const shorthand = margin.replace(/\s*!important\s*/gi, ' ').trim().replace(/\s+/g, ' ')
   if (shorthand === '') {
     throw new PdfError('bad-request', 'the @page margin is empty')
   }
@@ -106,6 +108,29 @@ function lengthInInches(text, shorthand) {
     throw new PdfError('bad-request', `unsupported @page margin length "${text}" in: ${shorthand}`)
   }
   return Number.parseFloat(match[1]) * UNIT_INCHES[match[2].toLowerCase()]
+}
+
+/**
+ * Read the print margins, falling back when the preset's form is unsupported.
+ *
+ * A preset is a user file: an unsupported @page form must not fail the export.
+ * The fallback is the plugin's uniform default box, and the caller reports the
+ * warning it returns. The strict readers stay for checks and for callers that
+ * genuinely need to refuse a bad form.
+ * @param html - a complete printable document.
+ * @returns the four margins in inches and a warning, empty on success.
+ */
+export function pageMarginInfo(html) {
+  try {
+    return { margins: pageMarginsInches(html), warning: '' }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    const fallback = Math.round((DEFAULT_PAGE.marginMm / 25.4) * INCH_PRECISION) / INCH_PRECISION
+    return {
+      margins: { top: fallback, bottom: fallback, left: fallback, right: fallback },
+      warning: 'unsupported @page margin; using a uniform ' + DEFAULT_PAGE.marginMm + 'mm box: ' + message,
+    }
+  }
 }
 
 /**

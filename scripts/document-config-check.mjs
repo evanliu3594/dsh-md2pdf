@@ -3,7 +3,7 @@
  * Run: node scripts/document-config-check.mjs
  */
 import { mergeDocumentConfig, PAGE_FIELDS, parseDocumentConfig } from '../src/document-config.js'
-import { pageMarginsInches, pageMarginShorthand, pageOverrideCss } from '../src/page-css.js'
+import { pageMarginInfo, pageMarginsInches, pageMarginShorthand, pageOverrideCss } from '../src/page-css.js'
 
 let failures = 0
 let checks = 0
@@ -220,6 +220,13 @@ for (const [unit, value] of unitChecks) {
 expectClose('unitless zero is accepted', pageMarginsInches('@page{margin:0}').top, 0)
 expectRejected('unsupported margin unit refused',
   () => pageMarginsInches('@page{margin:20px}'), 'bad-request')
+expectClose('an important suffix is not a length', pageMarginsInches('@page{margin:20mm !important}').top, 0.7874)
+const autoMargins = pageMarginInfo('@page{margin:auto}')
+expectClose('an unsupported form falls back to the default box', autoMargins.margins.top, 0.7087)
+expectTrue('an unsupported form carries a warning', autoMargins.warning.includes('unsupported @page margin'))
+const calcMargins = pageMarginInfo('@page{margin:calc(10mm + 2mm)}')
+expectClose('calc falls back to the default box', calcMargins.margins.left, 0.7087)
+expectTrue('calc carries a warning', calcMargins.warning !== '')
 expectRejected('too many margin values refused',
   () => pageMarginsInches('@page{margin:1mm 2mm 3mm 4mm 5mm}'), 'bad-request')
 

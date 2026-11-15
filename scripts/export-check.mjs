@@ -152,7 +152,7 @@ const {
 } = await import('../src/export.js')
 const { createPrintJobs } = await import('../src/print-jobs.js')
 const { describeEngines, printBrowser } = await import('../src/pdf.js')
-const { savePresetPage, selectPreset } = await import('../src/presets.js')
+const { savePreset, savePresetPage, selectPreset } = await import('../src/presets.js')
 const { scanAssets } = await import('../src/asset-scan.js')
 
 const PDF = Buffer.from('%PDF-1.4\n%%EOF\n', 'latin1')
@@ -306,6 +306,18 @@ try {
   expectEqual('preset page metadata reaches the page css',
     metadataHtml.includes('@page{margin:20mm}'), true)
   await finishExport({ finishToken: metadataPage.finishToken, pdfBytes: PDF })
+
+  // An unsupported @page form in a user preset falls back to the uniform box
+  // and warns; it must not refuse the export.
+  const brokenPreset = await savePreset({ name: 'Broken margins', css: '@page { margin: auto; }' })
+  const brokenPrepared = await prepareExport({ path: source, preset: brokenPreset.id })
+  expectEqual('an unsupported page form warns',
+    brokenPrepared.warnings.some(warning => warning.includes('unsupported @page margin')), true)
+  expectClose('an unsupported page form uses the default box',
+    brokenPrepared.printOptions.margins.top, 0.7087)
+  await finishExport({ finishToken: brokenPrepared.finishToken, pdfBytes: PDF })
+  // A new preset becomes selected; restore the selection the later checks use.
+  await selectPreset('paper')
 
   await savePresetPage('gongwen', { fontSize: 12 })
   const fontMetadata = await prepareExport({ path: source, preset: 'gongwen' })

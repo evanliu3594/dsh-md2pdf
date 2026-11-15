@@ -2,7 +2,7 @@
 
 Branch: v2-dsh-printing
 Base: 15dfbd9 (main at the branch point)
-Head at handoff: 783d4a7 (26 commits)
+Head at handoff: 6baa058 (27 commits)
 Date: 2026-11-15
 Design: docs/DESIGN.md
 Verification: docs/V2-VERIFICATION.md
@@ -44,11 +44,11 @@ S1 evidence: docs/S1-CHECKLIST.md
 
 ## Automatic verification
 
-Thirteen suites, green on Node 26.13.1 and Node 24.21.0 at 783d4a7:
+Thirteen suites, green on Node 26.13.1 and Node 24.21.0 at 6baa058:
 
-    175 render / 75 document config / 123 print options / 107 presets
+    195 render / 75 document config / 123 print options / 107 presets
      23 previews / 70 dsh preview / 5 printer / 42 print server
-     80 print jobs / 138 export / 95 after export / 283 broker / 105 client UI
+     80 print jobs / 137 export / 95 after export / 283 broker / 105 client UI
 
 list-audit: failures: builtin=0 markdown(old)=0 gfm+math=0.
 node --check passes on every changed JS file; git diff --check is clean.
@@ -91,7 +91,12 @@ docs/V2-VERIFICATION.md.
 - Existing preset CSS files are not upgraded. Shipped preset CSS reaches new or
   restored presets; structural resets still apply to old ones.
 - The browser fallback cannot print headers, footers, page numbers, or an
-  outline, and returns no warnings.
+  outline, and returns no warnings. It also does not run the afterExport action.
+- jobTimeoutMs and allowRemoteImages are listed in the design config table but
+  are not wired in v2: the job deadline stays 120 s and remote images stay
+  blocked by the CSP.
+- A bundle is bounded at 16 MiB, which covers every preset at the 512 KiB
+  stylesheet cap up to 32 presets; a larger library exceeds the route cap.
 
 ## Review trail
 

@@ -400,7 +400,9 @@ try {
   }
   expectEqual('unknown action refused', unknownAction?.code, 'bad-request')
 
-  expectEqual('windows opener uses start', openCommandFor('win32').args.join(' '), '/c start ""')
+  expectEqual('windows opener uses explorer', openCommandFor('win32').file, 'explorer.exe')
+  expectEqual('windows opener passes no shell arguments', openCommandFor('win32').args.join(','), '')
+  expectEqual('windows opener avoids cmd', openCommandFor('win32').file === 'cmd.exe', false)
   expectEqual('macos opener uses open', openCommandFor('darwin').file, 'open')
   expectEqual('linux opener uses xdg-open', openCommandFor('linux').file, 'xdg-open')
   expectEqual('unknown platform has no opener', openCommandFor('aix'), null)
@@ -454,6 +456,33 @@ try {
   expectEqual('overwrite replaces the css', customOverwritten.css, 'body { color: blue; }')
   expectEqual('overwrite replaces the page', customOverwritten.page.marginMm, 30)
   expectEqual('overwrite keeps the existing name', customOverwritten.name, 'Custom A')
+
+  // A user-visible name is an identity too: a new id with an existing name is a
+  // conflict, and overwriting it targets the stored preset.
+  const nameConflict = await importPresetBundle({
+    version: 2,
+    presets: [{ id: 'imported-lark', name: 'Lark', css: 'body { color: green; }' }],
+  })
+  expectEqual('a same-name preset is not imported', nameConflict.imported.length, 0)
+  expectEqual('a same-name preset is reported', nameConflict.warnings.length, 1)
+  expectEqual('a same-name import creates no twin',
+    (await listPresets()).presets.filter(preset => preset.name === 'Lark').length, 1)
+  const nameOverwrite = await importPresetBundle({
+    version: 2,
+    presets: [{ id: 'imported-lark', name: 'Lark', css: 'body { color: green; }' }],
+  }, { overwrite: true })
+  expectEqual('a same-name overwrite targets the stored preset', nameOverwrite.imported.join(','), 'lark')
+  expectEqual('a same-name overwrite keeps the stored name', (await readPreset('lark')).name, 'Lark')
+  expectEqual('a same-name overwrite stores the css',
+    (await readPreset('lark')).css, 'body { color: green; }')
+  expectEqual('a duplicate bundle name is refused',
+    (await capture(importPresetBundle({
+      version: 2,
+      presets: [
+        { id: 'one', name: 'Same', css: '' },
+        { id: 'two', name: 'Same', css: '' },
+      ],
+    })))?.code, 'bad-request')
 
   expectEqual('a path-like id is refused',
     (await capture(importPresetBundle({ version: 2, presets: [{ id: '../evil', name: 'x', css: '' }] })))?.code, 'bad-request')
