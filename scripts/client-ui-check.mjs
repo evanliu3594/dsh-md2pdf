@@ -123,6 +123,9 @@ for (const marker of [
     client.includes("'data-md2pdf': '" + marker + "'"))
 }
 
+expectTrue('the GB badge follows the national-standard flag',
+  client.includes('preset.gb === true'))
+
 // The settings page reads top to bottom: page settings, document overrides,
 // style library, editor and preview, fonts, diagnostics. Moving the font table
 // between the library and the editor made the two halves feel disconnected.

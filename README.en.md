@@ -126,7 +126,7 @@ A card carries three hot zones, shown on hover:
 - Blue bar underneath: load that preset's CSS into the editor.
 - Trash icon in the top-right corner: delete, after confirmation.
 
-A thumbnail is that preset's real rendering, scaled down, so colours, type scale, page margins and table rules match the exported PDF. An unmodified national-standard preset carries a GB badge.
+A thumbnail is that preset's real rendering, scaled down, so colours, type scale, page margins and table rules match the exported PDF. The official document and academic paper presets carry a GB badge.
 
 The editor title names the preset being edited and adds an "unsaved" badge once you change something. Saving opens a name dialog prefilled with the current name; a name already used by another preset asks before replacing it, and a new name creates a preset. The toolbar also offers New, Reload, Move up and Move down, plus Restore built-in presets once one has been deleted. The selected preset's first-page preview sits directly under the editor.
 

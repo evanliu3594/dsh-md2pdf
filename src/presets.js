@@ -325,7 +325,8 @@ export async function listPresets() {
   for (const entry of index.presets) {
     const shipped = builtin.includes(entry.id)
     const unmodified = shipped && (await readPresetCss(entry.id)) === themeCss(entry.id)
-    const preset = { id: entry.id, name: entry.name, builtin: shipped, unmodified }
+    const national = shipped && THEMES.some(theme => theme.id === entry.id && theme.gb === true)
+    const preset = { id: entry.id, name: entry.name, builtin: shipped, unmodified, gb: national }
     if (entry.description !== undefined) preset.description = entry.description
     if (entry.page !== undefined) preset.page = { ...entry.page }
     presets.push(preset)

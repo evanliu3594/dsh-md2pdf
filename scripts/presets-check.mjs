@@ -63,6 +63,8 @@ try {
   expectEqual('lark selected by default', first.selected, 'lark')
   expectEqual('lark is builtin and unmodified',
     `${first.presets[0].builtin}/${first.presets[0].unmodified}`, 'true/true')
+  expectEqual('only national-standard presets carry the gb flag',
+    first.presets.map(preset => `${preset.id}:${preset.gb}`).join(','), 'lark:false,gongwen:true,paper:true')
 
   const lark = await readPreset('lark')
   expectEqual('lark named Lark', lark.name, 'Lark')

@@ -3042,7 +3042,7 @@ window.__ModuleLoader__.load({
             },
             h(Thumb, { html: previews[preset.id], width: CARD_WIDTH, height: CARD_HEIGHT }),
             h('span', { className: 'md2pdf-card-label' }, preset.name)),
-            preset.unmodified === true
+            preset.gb === true
               ? h('span', { className: 'md2pdf-card-tag' }, t('settings.gbTag'))
               : null,
             h('button', {

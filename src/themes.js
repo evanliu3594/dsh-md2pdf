@@ -291,6 +291,7 @@ sup.footnote-ref a { color: #000; }
  * @property {string} label - Chinese display name shown in settings.
  * @property {string} labelEn - English display name.
  * @property {string} note - one-line description shown under the selector.
+ * @property {boolean} [gb] - true for a preset that follows a Chinese national standard.
  * @property {string} css - override layer emitted after the base stylesheet.
  */
 
@@ -308,6 +309,7 @@ export const THEMES = Object.freeze([
     label: '红头公文',
     labelEn: 'Official document',
     note: 'GB/T 9704-2012：版心 156×225mm，3 号仿宋，22 行 × 28 字，三线表',
+    gb: true,
     css: GONGWEN,
   },
   {
@@ -315,6 +317,7 @@ export const THEMES = Object.freeze([
     label: '学术论文',
     labelEn: 'Academic paper',
     note: 'GB/T 7713.2-2022：五号宋体正文，分级黑体标题，三线表',
+    gb: true,
     css: PAPER,
   },
 ])
