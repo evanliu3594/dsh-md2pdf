@@ -43,27 +43,17 @@ The official document preset uses a 156×225 mm type area, 16 pt FangSong body t
 
 ## Install
 
-The plugin is published on npm: [dsh-md2pdf](https://www.npmjs.com/package/dsh-md2pdf), currently 0.1.1.
+In DeepSeek Harness, open **Plugins** in the sidebar, choose **Add plugin**, and enter the package name:
 
-Add a version range to the DSH profile's `package.json`:
-
-```json
-{ "dependencies": { "dsh-md2pdf": "^0.1.1" } }
+```text
+dsh-md2pdf
 ```
 
-```powershell
-pnpm install
-```
+Choose **Install**. When installation finishes, choose **Enable now**; if that button is absent, turn on `dsh-md2pdf` in the plugin list. Restart DSH when the plugin manager asks.
 
-For a source checkout, use a link so edits take effect immediately, then run `pnpm install`:
+npm package page: [dsh-md2pdf](https://www.npmjs.com/package/dsh-md2pdf).
 
-```json
-{ "dependencies": { "dsh-md2pdf": "link:/path/to/dsh-md2pdf" } }
-```
-
-On Windows, write the path as `link:C:/path/to/dsh-md2pdf`.
-
-Either way, add `dsh-md2pdf` to `dsh.profile.bundles` in the same file and restart DSH.
+For a source checkout, choose **Add plugin** and enter the absolute path to the checkout; the installer links that directory.
 
 Requirement: Node.js 20.11 or newer.
 

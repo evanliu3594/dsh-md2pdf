@@ -43,29 +43,19 @@
 
 ## 安装
 
-插件已发布到 npm：[dsh-md2pdf](https://www.npmjs.com/package/dsh-md2pdf)，当前版本 0.1.1。
+在 DeepSeek Harness 左侧打开「插件」，点「添加插件」，输入包名：
 
-在 DSH profile 的 `package.json` 里写版本范围：
-
-```json
-{ "dependencies": { "dsh-md2pdf": "^0.1.1" } }
+```text
+dsh-md2pdf
 ```
 
-```powershell
-pnpm install
-```
+点「安装」。装完后点「立即启用」；没有这个按钮时，在插件列表打开 `dsh-md2pdf` 的开关。插件管理器提示需要重启时，重启 DSH。
 
-改源码时改用链接形式，改动即时生效，同样运行 `pnpm install`：
+npm 包页面：[dsh-md2pdf](https://www.npmjs.com/package/dsh-md2pdf)。
 
-```json
-{ "dependencies": { "dsh-md2pdf": "link:/path/to/dsh-md2pdf" } }
-```
+开发源码时，在「添加插件」里填仓库的绝对路径，安装器会链接该目录。
 
-Windows 路径写成 `link:C:/path/to/dsh-md2pdf`。
-
-两种方式都要把 `dsh-md2pdf` 加进同一文件的 `dsh.profile.bundles`，然后重启 DSH。
-
-前提：Node.js 20.11 或更新版本。
+运行要求：Node.js 20.11 或更新版本。
 
 两种运行环境：
 
