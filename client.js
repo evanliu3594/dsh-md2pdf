@@ -767,7 +767,13 @@ window.__ModuleLoader__.load({
         }
       }
       rewrite(sheet.cssRules, index => sheet.deleteRule(index))
-      return Array.from(sheet.cssRules).map(rule => rule.cssText).join('\n')
+      const scoped = Array.from(sheet.cssRules).map(rule => rule.cssText).join('\n')
+      // DSH wraps Markdown in its own font-carrying nodes. Let the preset body
+      // font pass through those wrappers; preset rules that set a face later in
+      // this sheet keep their own higher specificity.
+      const bridge = PREVIEW_STYLE_ROOT + ' > *,\n'
+        + PREVIEW_STYLE_ROOT + ' :where(div, p, li, td, th, blockquote, dd, dt, a) { font-family: inherit; }\n'
+      return bridge + scoped
     }
 
     /**

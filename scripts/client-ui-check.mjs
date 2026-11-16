@@ -138,6 +138,8 @@ expectTrue('the preview style drops page rules', client.includes('rule.type === 
 expectTrue('the preview style is opt-in',
   client.includes('localStorage.getItem(PREVIEW_STYLE_KEY)'))
 expectTrue('the preview style is injected', client.includes("'preview-style'"))
+expectTrue('the preview font crosses DSH wrappers',
+  client.includes('font-family: inherit') && client.includes(':where(div, p, li, td, th'))
 expectTrue('the preview toggle is styled', client.includes('.md2pdf-check'))
 expectTrue('the preview toggle follows the preset heading',
   client.indexOf("key: 'preset-heading'") < client.indexOf("'data-md2pdf': 'preview-css'"))
