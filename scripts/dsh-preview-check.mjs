@@ -286,6 +286,8 @@ try {
   const client = await readFile(join(here, '..', 'client.js'), 'utf8')
   expectTrue('the client measures font candidates on a canvas',
   client.includes('measureText') && client.includes('actualBoundingBoxAscent'))
+expectTrue('the preview sheet outranks the DSH document font rule',
+  client.includes("'[data-document-markdown][data-document-markdown]'"))
 expectTrue('the font check does not trust fallback-aware FontFaceSet.check',
   !client.includes('document.fonts.check'))
   expectTrue('the client passes a CJK sample', client.includes("'汉'"))

@@ -131,7 +131,7 @@ expectTrue('the GB badge follows the national-standard flag',
 
 // Optional preview styling is scoped to DSH's Markdown root and drops page geometry.
 expectTrue('the preview style targets the DSH Markdown root',
-  client.includes("'[data-document-markdown]'"))
+  client.includes('data-document-markdown'))
 expectTrue('the preview style uses CSSOM',
   client.includes('new CSSStyleSheet') && client.includes('selectorText'))
 expectTrue('the preview style drops page rules', client.includes('rule.type === 6'))

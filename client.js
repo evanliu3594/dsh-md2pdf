@@ -683,7 +683,10 @@ window.__ModuleLoader__.load({
     /** Browser-local preference for applying the selected preset to the sidebar preview. */
     const PREVIEW_STYLE_KEY = 'md2pdf.preview-css'
     const PREVIEW_STYLE_EVENT = 'md2pdf:preview-style'
-    const PREVIEW_STYLE_ROOT = '[data-document-markdown]'
+    // Two attributes give the scoped sheet specificity 0,2,0. DSH's own
+    // `.document { font-family: var(--dsw-font) }` is 0,1,0 and may load after
+    // this sheet; the duplicate attribute keeps the preset font authoritative.
+    const PREVIEW_STYLE_ROOT = '[data-document-markdown][data-document-markdown]'
     let previewStyleElement = null
     let previewCssMemory = false
 

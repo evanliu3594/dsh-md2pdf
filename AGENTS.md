@@ -132,7 +132,7 @@ node scripts/pdf-info.mjs samples/sample.pdf
 ```
 
 当前计数（2026-11-16）：render 203、document config 80、print options 131、presets 117、
-previews 25、dsh preview 71、printer 5、print server 42、print jobs 80、export 139、
+previews 25、dsh preview 72、printer 5、print server 42、print jobs 80、export 139、
 after export 95、broker 294、client UI 134。计数会随功能增长；闸门是「全部通过」。
 Windows 10 账户没有符号链接权限时 export 为 136/136，少 3 条 symlink 断言。
 `list-audit` 必须打印 `failures: builtin=0 markdown(old)=0 gfm+math=0`。
