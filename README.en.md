@@ -142,7 +142,7 @@ The Open button beside the stylesheet path hands the current preset's CSS to you
 
 The top of the page shows the active print engine, with Refresh and Test print beside it. A test print renders one sample page with a page-number footer and two headings, which checks both the printer and the page features. The Page section stores paper size, orientation, margins and body size on the current preset.
 
-A checkbox under the Page section, "Apply the current preset stylesheet to the sidebar Markdown preview", is off by default. When checked, the preset's type, colours, heading levels, tables and code styles apply to Markdown file previews; `@page` margins are ignored and the DSH container keeps its padding. It only changes styling: no contents page, paper block or page breaks appear in the preview.
+A checkbox under the Presets heading, "Apply the current preset stylesheet to the sidebar Markdown preview", is off by default. When checked, the preset's type, colours, heading levels, tables and code styles apply to Markdown file previews; `@page` margins are ignored and the DSH container keeps its padding. It only changes styling: no contents page, paper block or page breaks appear in the preview.
 
 Document overrides apply to this window's later exports only: page, header, footer, page numbers and contents. Apply to this window turns them on; Clear overrides returns to the file's values. Neither the source file nor the preset changes.
 

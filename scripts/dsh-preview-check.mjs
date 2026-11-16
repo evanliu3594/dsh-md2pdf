@@ -284,7 +284,10 @@ try {
   // 8. The client wiring is checked as text here. The real availability check
   // runs in the DSH Chromium and remains manual.
   const client = await readFile(join(here, '..', 'client.js'), 'utf8')
-  expectTrue('the client calls document.fonts.check', client.includes('document.fonts.check'))
+  expectTrue('the client measures font candidates on a canvas',
+  client.includes('measureText') && client.includes('actualBoundingBoxAscent'))
+expectTrue('the font check does not trust fallback-aware FontFaceSet.check',
+  !client.includes('document.fonts.check'))
   expectTrue('the client passes a CJK sample', client.includes("'汉'"))
   expectTrue('the client passes a Latin sample', client.includes("'A'"))
   expectTrue('the client opens the Host address through sidebarRight',

@@ -1782,21 +1782,54 @@ window.__ModuleLoader__.load({
           : null)
     }
 
+    /** Canvas context for font metric probes; created once per window. */
+    let fontProbeContext = null
+
     /**
-     * Ask this window whether one family covers a sample character.
+     * Measure one font probe on a 2D canvas.
+     * @param context - the probe canvas context.
+     * @param font - CSS font shorthand.
+     * @param text - text to measure.
+     * @returns the metric tuple, or null when the browser refuses the probe.
+     */
+    function fontMetrics(context, font, text) {
+      context.font = font
+      const measured = context.measureText(text)
+      return [
+        measured.width,
+        measured.actualBoundingBoxAscent,
+        measured.actualBoundingBoxDescent,
+        measured.actualBoundingBoxLeft,
+        measured.actualBoundingBoxRight,
+      ].map(value => (typeof value === 'number' ? value : 0))
+    }
+
+    /**
+     * Ask this window whether one family is usable for a sample character.
      *
-     * The Font Loading API is the check the design names. A window without it
-     * returns null, which the table renders as unverified rather than missing.
+     * FontFaceSet.check() cannot answer this: it counts the generic fallback
+     * that resolves a missing family, so every name appears available. Compare
+     * the family's metrics against the same sample drawn with no such family,
+     * against two generic fallbacks. A missing family reproduces the fallback
+     * exactly; a present family changes at least one metric.
      * @param family - one concrete family name.
      * @param sample - one character the family should cover.
-     * @returns true, false, or null when this window cannot check.
+     * @returns true, false, or null when this window cannot probe.
      */
     function fontAvailable(family, sample) {
-      if (typeof document === 'undefined') return null
-      if (document.fonts === undefined || document.fonts === null) return null
-      if (typeof document.fonts.check !== 'function') return null
+      if (typeof document === 'undefined' || typeof sample !== 'string' || sample === '') return null
+      if (fontProbeContext === null) {
+        fontProbeContext = document.createElement('canvas').getContext('2d')
+      }
+      if (fontProbeContext === null) return null
+      const text = sample.repeat(4)
       try {
-        return document.fonts.check(`16px ${JSON.stringify(family)}`, sample) === true
+        for (const fallback of ['monospace', 'serif']) {
+          const base = fontMetrics(fontProbeContext, '64px ' + fallback, text)
+          const test = fontMetrics(fontProbeContext, '64px ' + JSON.stringify(family) + ', ' + fallback, text)
+          if (base.some((value, index) => Math.abs(value - test[index]) > 0.01)) return true
+        }
+        return false
       } catch {
         return null
       }
@@ -3037,20 +3070,6 @@ window.__ModuleLoader__.load({
             }, t('settings.pageUnsupported', { detail: pageForms.join(', ') })))
           }
 
-          rows.push(h('label', { key: 'preview-css', className: 'md2pdf-check' },
-            h('input', {
-              type: 'checkbox',
-              checked: previewCss,
-              'data-md2pdf': 'preview-css',
-              onChange: (event) => {
-                const next = event.target.checked
-                setPreviewCss(next)
-                setPreviewCssEnabled(next)
-              },
-            }),
-            h('span', null, t('settings.previewCss'))))
-          rows.push(h('p', { key: 'preview-css-hint', className: 'md2pdf-hint' }, t('settings.previewCssHint')))
-
           rows.push(h('h3', { key: 'doc-heading', className: 'md2pdf-heading' }, t('settings.docHeading')))
           rows.push(h('p', { key: 'doc-hint', className: 'md2pdf-hint' }, t('settings.docHint')))
           if (docActive) {
@@ -3175,6 +3194,21 @@ window.__ModuleLoader__.load({
               disabled: phase === 'loading' || !docActive,
               onClick: resetDocument,
             }, t('settings.docReset'))))
+
+          rows.push(h('h3', { key: 'preset-heading', className: 'md2pdf-heading' }, t('settings.presetLabel')))
+          rows.push(h('label', { key: 'preview-css', className: 'md2pdf-check' },
+            h('input', {
+              type: 'checkbox',
+              checked: previewCss,
+              'data-md2pdf': 'preview-css',
+              onChange: (event) => {
+                const next = event.target.checked
+                setPreviewCss(next)
+                setPreviewCssEnabled(next)
+              },
+            }),
+            h('span', null, t('settings.previewCss'))))
+          rows.push(h('p', { key: 'preview-css-hint', className: 'md2pdf-hint' }, t('settings.previewCssHint')))
 
           if (presets.length > 0) {
             rows.push(h('div', {

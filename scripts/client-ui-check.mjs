@@ -139,6 +139,12 @@ expectTrue('the preview style is opt-in',
   client.includes('localStorage.getItem(PREVIEW_STYLE_KEY)'))
 expectTrue('the preview style is injected', client.includes("'preview-style'"))
 expectTrue('the preview toggle is styled', client.includes('.md2pdf-check'))
+expectTrue('the preview toggle follows the preset heading',
+  client.indexOf("key: 'preset-heading'") < client.indexOf("'data-md2pdf': 'preview-css'"))
+expectTrue('font availability uses canvas metrics',
+  client.includes('measureText') && client.includes('actualBoundingBoxAscent'))
+expectTrue('font availability does not trust the fallback-aware FontFaceSet check',
+  !client.includes('document.fonts.check'))
 
 // The settings page reads top to bottom: page settings, document overrides,
 // style library, editor and preview, fonts, diagnostics. Moving the font table

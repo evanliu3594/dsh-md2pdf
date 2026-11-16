@@ -502,12 +502,9 @@ v2 不自动刷新已经打开的 PDF。重新导出后，用户关闭再打开�
 
 ### 字体检查
 
-设置页读取当前预设 CSS，提取 `font-family` 声明中的具体字体族。对每个族执行：
+设置页读取当前预设 CSS，提取 `font-family` 声明中的具体字体族。对每个族在 2D canvas 上比较 `"Family", fallback` 与单独 fallback 的测量结果（宽度、ascent、descent 与包围盒），在 `monospace` 与 `serif` 两个基线上都不一致才算可用。
 
-```js
-document.fonts.check('16px "Family"', '汉')
-document.fonts.check('16px "Family"', 'A')
-```
+`document.fonts.check()` 会把解析缺失字体族时使用的 fallback 算作可用，每个名字都返回可用；字体表不能用它。
 
 结果分三类：可用、缺汉字、缺拉丁。通用族（serif、sans-serif、monospace、system-ui）跳过。`@font-face` 自定义字体在客户端未加载时标为“未验证”，不冒充可用。
 
