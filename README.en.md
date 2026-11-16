@@ -1,6 +1,6 @@
 # dsh-md2pdf
 
-English | [中文](README.md)
+English | [中文](README.md) | [npm](https://www.npmjs.com/package/dsh-md2pdf)
 
 Export the Markdown open in a DeepSeek Harness sidebar file tab to a PDF beside the source file. The printed page style comes from editable presets.
 
@@ -31,21 +31,25 @@ The official document preset uses a 156×225 mm type area, 16 pt FangSong body t
 
 ## Install
 
-Add a dependency in the DSH profile directory. For a source checkout, link it so edits take effect immediately:
+The plugin is published on npm: [dsh-md2pdf](https://www.npmjs.com/package/dsh-md2pdf), currently 0.1.0.
+
+Add a version range to the DSH profile's `package.json`:
 
 ```json
-{ "dependencies": { "dsh-md2pdf": "link:D:/path/to/dsh-md2pdf" } }
+{ "dependencies": { "dsh-md2pdf": "^0.1.0" } }
 ```
 
 ```powershell
 pnpm install
 ```
 
-Once the package is on npm, a version range works instead:
+For a source checkout, use a link so edits take effect immediately, then run `pnpm install`:
 
 ```json
-{ "dependencies": { "dsh-md2pdf": "^0.1.0" } }
+{ "dependencies": { "dsh-md2pdf": "link:/path/to/dsh-md2pdf" } }
 ```
+
+On Windows, write the path as `link:C:/path/to/dsh-md2pdf`.
 
 Either way, add `dsh-md2pdf` to `dsh.profile.bundles` in the same file and restart DSH.
 
@@ -103,8 +107,6 @@ Out of scope in v2: cover pages, a full red-head template, watermarks, contents 
 ## Interface
 
 The settings page reads top to bottom: print engine, page settings and document overrides, the preset library, the CSS editor with the selected preset's preview, the font table, and diagnostics.
-
-![Settings page](docs/images/settings.png)
 
 A card carries three hot zones, shown on hover:
 

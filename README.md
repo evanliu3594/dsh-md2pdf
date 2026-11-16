@@ -1,6 +1,6 @@
 # dsh-md2pdf
 
-[English](README.en.md) | 中文
+[English](README.en.md) | 中文 | [npm](https://www.npmjs.com/package/dsh-md2pdf)
 
 把 DeepSeek Harness 侧边栏里打开的 Markdown 导出成 PDF，PDF 写在源文件同目录。版式由可编辑的预设管理。
 
@@ -31,23 +31,27 @@
 
 ## 安装
 
-在 DSH profile 目录里加一条依赖。从源码安装用链接形式，改动即时生效：
+插件已发布到 npm：[dsh-md2pdf](https://www.npmjs.com/package/dsh-md2pdf)，当前版本 0.1.0。
+
+在 DSH profile 的 `package.json` 里写版本范围：
 
 ```json
-{ "dependencies": { "dsh-md2pdf": "link:D:/path/to/dsh-md2pdf" } }
+{ "dependencies": { "dsh-md2pdf": "^0.1.0" } }
 ```
 
 ```powershell
 pnpm install
 ```
 
-包发布到 npm 后也可直接写版本号：
+改源码时改用链接形式，改动即时生效，同样运行 `pnpm install`：
 
 ```json
-{ "dependencies": { "dsh-md2pdf": "^0.1.0" } }
+{ "dependencies": { "dsh-md2pdf": "link:/path/to/dsh-md2pdf" } }
 ```
 
-两种方式都要再把 `dsh-md2pdf` 加进同一文件的 `dsh.profile.bundles`，然后重启 DSH。
+Windows 路径写成 `link:C:/path/to/dsh-md2pdf`。
+
+两种方式都要把 `dsh-md2pdf` 加进同一文件的 `dsh.profile.bundles`，然后重启 DSH。
 
 前提：Node.js 20.11 或更新版本。
 
@@ -103,8 +107,6 @@ pdf.toc: true
 ## 界面
 
 设置页从上到下是打印引擎、页面与文档覆盖、预设库、编辑器与预览、字体、诊断。
-
-![设置页](docs/images/settings.png)
 
 卡片分三块热区，鼠标悬停时出现：
 
