@@ -174,6 +174,8 @@ window.__ModuleLoader__.load({
         'settings.pageResetFailed': 'Could not reset page settings: {message}',
         'settings.pageInvalid': 'Page settings are out of range.',
         'settings.pageUnsupported': 'This preset uses an unsupported @page form ({detail}); printing uses one uniform page box.',
+        'settings.previewCss': 'Apply the current preset stylesheet to the sidebar Markdown preview',
+        'settings.previewCssHint': 'Only typography and colours apply. @page margins are ignored; the preview keeps the DSH container padding.',
         'settings.fontHeading': 'Fonts',
         'settings.fontHint': 'Families declared by the preset in use. Availability is checked in this window; a @font-face family stays unverified.',
         'settings.fontEmpty': 'The selected preset declares no specific font family.',
@@ -322,6 +324,8 @@ window.__ModuleLoader__.load({
         'settings.pageResetFailed': '重置页面设置失败：{message}',
         'settings.pageInvalid': '页面设置的取值超出范围。',
         'settings.pageUnsupported': '此预设使用了不支持的 @page 写法（{detail}）；打印按统一页框处理。',
+        'settings.previewCss': '在侧边栏 Markdown 预览中应用当前预设样式',
+        'settings.previewCssHint': '只应用排版与颜色；@page 页边距不生效，预览保留 DSH 容器的内边距。',
         'settings.fontHeading': '字体',
         'settings.fontHint': '当前预设声明的字体族。可用性在本窗口检测；@font-face 自定义字体标为未验证。',
         'settings.fontEmpty': '当前预设未声明具体字体族。',
@@ -674,6 +678,123 @@ window.__ModuleLoader__.load({
           return capabilityValue
         })
       return capability
+    }
+
+    /** Browser-local preference for applying the selected preset to the sidebar preview. */
+    const PREVIEW_STYLE_KEY = 'md2pdf.preview-css'
+    const PREVIEW_STYLE_EVENT = 'md2pdf:preview-style'
+    const PREVIEW_STYLE_ROOT = '[data-document-markdown]'
+    let previewStyleElement = null
+    let previewCssMemory = false
+
+    /**
+     * Read the sidebar-preview preference.
+     * @returns true when the current preset stylesheet should style Markdown previews.
+     */
+    function previewCssEnabled() {
+      try {
+        return window.localStorage.getItem(PREVIEW_STYLE_KEY) === 'true'
+      } catch {
+        return previewCssMemory
+      }
+    }
+
+    /**
+     * Store the sidebar-preview preference and notify the style host.
+     * @param enabled - the new preference.
+     */
+    function setPreviewCssEnabled(enabled) {
+      previewCssMemory = enabled === true
+      try {
+        window.localStorage.setItem(PREVIEW_STYLE_KEY, enabled === true ? 'true' : 'false')
+      } catch {
+        // The in-memory value still governs this session.
+      }
+      window.dispatchEvent(new Event(PREVIEW_STYLE_EVENT))
+    }
+
+    /**
+     * Scope one selector to the DSH Markdown preview root.
+     * @param selectorText - one selector or a comma-separated selector list.
+     * @returns the scoped selector list.
+     */
+    function scopePreviewSelector(selectorText) {
+      return selectorText.split(',').map((part) => {
+        const selector = part.trim()
+        if (selector === '') return selector
+        const rooted = selector.replace(
+          /(^|[\s>+~])(body|html|:root)(?=$|[\s>+~.#:[,])/g,
+          '$1' + PREVIEW_STYLE_ROOT,
+        )
+        if (rooted !== selector) return rooted
+        return PREVIEW_STYLE_ROOT + ' ' + selector
+      }).join(', ')
+    }
+
+    /**
+     * Rewrite preset CSS for the sidebar: drop @page and scope every style rule.
+     * @param cssText - the selected preset stylesheet.
+     * @returns screen CSS scoped to [data-document-markdown], or '' when CSSOM is unavailable.
+     */
+    function scopePreviewCss(cssText) {
+      if (typeof CSSStyleSheet !== 'function') return ''
+      const sheet = new CSSStyleSheet()
+      if (typeof sheet.replaceSync !== 'function') return ''
+      try {
+        sheet.replaceSync(cssText)
+      } catch {
+        return ''
+      }
+      const rewrite = (rules, removeRule) => {
+        for (let index = rules.length - 1; index >= 0; index -= 1) {
+          const rule = rules[index]
+          if (rule.type === 6) {
+            // CSSPageRule: screen previews do not have printable page margins.
+            removeRule(index)
+            continue
+          }
+          if (rule.type === 1) {
+            rule.selectorText = scopePreviewSelector(rule.selectorText)
+            continue
+          }
+          // @media, @supports, @layer and similar groups carry nested rules.
+          if (rule.cssRules !== undefined && rule.type !== 5 && rule.type !== 7) {
+            rewrite(rule.cssRules, innerIndex => rule.deleteRule(innerIndex))
+          }
+        }
+      }
+      rewrite(sheet.cssRules, index => sheet.deleteRule(index))
+      return Array.from(sheet.cssRules).map(rule => rule.cssText).join('\n')
+    }
+
+    /**
+     * Fetch the selected preset stylesheet and refresh the injected preview style.
+     * @returns a promise that settles after the style element is updated.
+     */
+    async function refreshPreviewStyle() {
+      const element = previewStyleElement
+      if (element === null) return
+      if (!previewCssEnabled()) {
+        element.textContent = ''
+        return
+      }
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          const { response, payload } = await requestRoute(SETTINGS_ROUTE, { headers: { accept: 'application/json' } })
+          if (!response.ok || payload === null || typeof payload.css !== 'string') {
+            throw new Error('preview style route answered HTTP ' + response.status)
+          }
+          element.textContent = scopePreviewCss(payload.css)
+          return
+        } catch (error) {
+          if (attempt === 2) {
+            element.textContent = ''
+            console.warn('md2pdf: could not load the preview stylesheet', error)
+          } else {
+            await new Promise(resolve => setTimeout(resolve, 400))
+          }
+        }
+      }
     }
 
     /**
@@ -1570,6 +1691,8 @@ window.__ModuleLoader__.load({
 .md2pdf-font-state[data-state="face"],
 .md2pdf-font-state[data-state="unknown"] { color: var(--dsw-alias-label-secondary, #6b7280); }
 .md2pdf-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.md2pdf-check { display: flex; align-items: center; gap: 8px; font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-primary, #1c1f23); }
+.md2pdf-check input { width: 14px; height: 14px; margin: 0; accent-color: var(--dsw-alias-brand-primary, #2f6fa8); }
 .md2pdf-btn {
   font: inherit;
   font-size: 13px;
@@ -2202,6 +2325,24 @@ window.__ModuleLoader__.load({
           id: 'md2pdf-print-host',
         }, PrintHost)), 'md2pdf: print host')
 
+        // Optional screen styling for the DSH Markdown preview. The style is
+        // scoped to the preview's stable data attribute, so it cannot leak into
+        // the rest of the application.
+        ctx.effect(() => {
+          const element = document.createElement('style')
+          element.setAttribute('data-md2pdf', 'preview-style')
+          document.head.appendChild(element)
+          previewStyleElement = element
+          const refresh = () => { refreshPreviewStyle().catch(() => {}) }
+          window.addEventListener(PREVIEW_STYLE_EVENT, refresh)
+          refresh()
+          return () => {
+            window.removeEventListener(PREVIEW_STYLE_EVENT, refresh)
+            element.remove()
+            if (previewStyleElement === element) previewStyleElement = null
+          }
+        }, 'md2pdf: preview style')
+
         // Settings page: the preset library, its editor, and the dialogs that
         // confirm a save or a deletion.
         function SettingsSection() {
@@ -2233,6 +2374,7 @@ window.__ModuleLoader__.load({
             landscape: PAGE_DEFAULTS.landscape,
           }))
           const [pageBusy, setPageBusy] = React.useState(false)
+          const [previewCss, setPreviewCss] = React.useState(() => previewCssEnabled())
           const [fonts, setFonts] = React.useState([])
           const [engineBusy, setEngineBusy] = React.useState(false)
           const [testBusy, setTestBusy] = React.useState(false)
@@ -2307,6 +2449,7 @@ window.__ModuleLoader__.load({
                 applyPageState(payload)
                 setStatus(null)
                 setPhase('ready')
+                window.dispatchEvent(new Event(PREVIEW_STYLE_EVENT))
                 return
               } catch (error) {
                 // A page opened while the Host is still starting can reach the
@@ -2893,6 +3036,20 @@ window.__ModuleLoader__.load({
               role: 'status',
             }, t('settings.pageUnsupported', { detail: pageForms.join(', ') })))
           }
+
+          rows.push(h('label', { key: 'preview-css', className: 'md2pdf-check' },
+            h('input', {
+              type: 'checkbox',
+              checked: previewCss,
+              'data-md2pdf': 'preview-css',
+              onChange: (event) => {
+                const next = event.target.checked
+                setPreviewCss(next)
+                setPreviewCssEnabled(next)
+              },
+            }),
+            h('span', null, t('settings.previewCss'))))
+          rows.push(h('p', { key: 'preview-css-hint', className: 'md2pdf-hint' }, t('settings.previewCssHint')))
 
           rows.push(h('h3', { key: 'doc-heading', className: 'md2pdf-heading' }, t('settings.docHeading')))
           rows.push(h('p', { key: 'doc-hint', className: 'md2pdf-hint' }, t('settings.docHint')))

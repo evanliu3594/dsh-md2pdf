@@ -67,6 +67,8 @@ const bilingual = [
   'settings.docCleared',
   'settings.docInvalid',
   'settings.docActive',
+  'settings.previewCss',
+  'settings.previewCssHint',
   'settings.diagnostics',
   'settings.diagnosticsHint',
   'settings.diagnosticsCopy',
@@ -116,6 +118,7 @@ for (const marker of [
   'test-status',
   'doc-form',
   'doc-active',
+  'preview-css',
   'last-error',
   'diagnostics',
 ]) {
@@ -125,6 +128,17 @@ for (const marker of [
 
 expectTrue('the GB badge follows the national-standard flag',
   client.includes('preset.gb === true'))
+
+// Optional preview styling is scoped to DSH's Markdown root and drops page geometry.
+expectTrue('the preview style targets the DSH Markdown root',
+  client.includes("'[data-document-markdown]'"))
+expectTrue('the preview style uses CSSOM',
+  client.includes('new CSSStyleSheet') && client.includes('selectorText'))
+expectTrue('the preview style drops page rules', client.includes('rule.type === 6'))
+expectTrue('the preview style is opt-in',
+  client.includes('localStorage.getItem(PREVIEW_STYLE_KEY)'))
+expectTrue('the preview style is injected', client.includes("'preview-style'"))
+expectTrue('the preview toggle is styled', client.includes('.md2pdf-check'))
 
 // The settings page reads top to bottom: page settings, document overrides,
 // style library, editor and preview, fonts, diagnostics. Moving the font table
