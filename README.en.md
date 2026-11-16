@@ -1,6 +1,18 @@
-# dsh-md2pdf
+<p align="center">
+  <img src="https://raw.githubusercontent.com/evanliu3594/dsh-md2pdf/main/icon.svg" width="96" height="96" alt="dsh-md2pdf">
+</p>
 
-English | [中文](README.md) | [npm](https://www.npmjs.com/package/dsh-md2pdf)
+<h1 align="center">dsh-md2pdf</h1>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/dsh-md2pdf"><img src="https://img.shields.io/npm/v/dsh-md2pdf.svg" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/dsh-md2pdf"><img src="https://img.shields.io/npm/dm/dsh-md2pdf.svg" alt="npm downloads"></a>
+  <a href="https://github.com/evanliu3594/dsh-md2pdf/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/dsh-md2pdf.svg" alt="license"></a>
+  <a href="https://github.com/evanliu3594/dsh-md2pdf/blob/main/package.json"><img src="https://img.shields.io/node/v/dsh-md2pdf.svg" alt="node version"></a>
+  <a href="https://www.dsh.so/artifact/dsh-md2pdf-3/?ref=badge"><img src="https://cdn.dsh.so/badge/dsh-md2pdf-3.svg" alt="dsh.so risk"></a>
+</p>
+
+<p align="center">English | <a href="https://github.com/evanliu3594/dsh-md2pdf/blob/main/README.md">中文</a></p>
 
 Export the Markdown open in a DeepSeek Harness sidebar file tab to a PDF beside the source file. The printed page style comes from editable presets.
 
@@ -23,7 +35,7 @@ The first page of one sample document, laid out by each built-in preset:
 
 | Official document | Academic paper | Lark |
 |---|---|---|
-| [![Official document](docs/images/preset-gongwen.png)](samples/sample-gongwen.pdf) | [![Academic paper](docs/images/preset-paper.png)](samples/sample-paper.pdf) | [![Lark](docs/images/preset-lark.png)](samples/sample-lark.pdf) |
+| [![Official document](https://raw.githubusercontent.com/evanliu3594/dsh-md2pdf/main/docs/images/preset-gongwen.png)](https://github.com/evanliu3594/dsh-md2pdf/blob/main/samples/sample-gongwen.pdf) | [![Academic paper](https://raw.githubusercontent.com/evanliu3594/dsh-md2pdf/main/docs/images/preset-paper.png)](https://github.com/evanliu3594/dsh-md2pdf/blob/main/samples/sample-paper.pdf) | [![Lark](https://raw.githubusercontent.com/evanliu3594/dsh-md2pdf/main/docs/images/preset-lark.png)](https://github.com/evanliu3594/dsh-md2pdf/blob/main/samples/sample-lark.pdf) |
 
 Click an image to open the full PDF. All three live in `samples/`.
 
@@ -31,12 +43,12 @@ The official document preset uses a 156×225 mm type area, 16 pt FangSong body t
 
 ## Install
 
-The plugin is published on npm: [dsh-md2pdf](https://www.npmjs.com/package/dsh-md2pdf), currently 0.1.0.
+The plugin is published on npm: [dsh-md2pdf](https://www.npmjs.com/package/dsh-md2pdf), currently 0.1.1.
 
 Add a version range to the DSH profile's `package.json`:
 
 ```json
-{ "dependencies": { "dsh-md2pdf": "^0.1.0" } }
+{ "dependencies": { "dsh-md2pdf": "^0.1.1" } }
 ```
 
 ```powershell
@@ -136,11 +148,11 @@ Diagnostics shows the engine, font counts, the last error and the plugin folder,
 
 ## More
 
-Preset file format, migration rules, style layering, the printing pipeline, routes and the security boundary, and the full list of limitations: [docs/DESIGN.md](docs/DESIGN.md) (Chinese).
+Preset file format, migration rules, style layering, the printing pipeline, routes and the security boundary, and the full list of limitations: [docs/DESIGN.md](https://github.com/evanliu3594/dsh-md2pdf/blob/main/docs/DESIGN.md) (Chinese).
 
 ## License and credits
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](https://github.com/evanliu3594/dsh-md2pdf/blob/main/LICENSE).
 
 The Lark preset takes its palette, type scale, line height and spacing from the published design parameters of [imageslr/mweb-themes](https://github.com/imageslr/mweb-themes). That repository declares no licence, so this project copied none of its SCSS; the print CSS was written from those parameters.
 

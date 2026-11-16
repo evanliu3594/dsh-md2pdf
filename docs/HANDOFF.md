@@ -187,7 +187,7 @@ S2 also found two print-option defects; both are fixed at 4343056:
 1. Manual gates are recorded in docs/V2-VERIFICATION.md; the Windows run
    passed on 2026-11-15.
 2. Merged v2-dsh-printing into main at 02c0344 on 2026-11-15.
-3. Keep the version at 0.1.0 until release. No runtime dependency was added.
+3. Version 0.1.1 is the npm release. No runtime dependency was added.
 4. If the samples or docs images should reflect the new renderer output,
    regenerate them with a one-off MD2PDF_HOME before publishing.
 5. Pushed to origin/main on 2026-11-15; this record follows the merge.

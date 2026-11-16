@@ -1,6 +1,18 @@
-# dsh-md2pdf
+<p align="center">
+  <img src="https://raw.githubusercontent.com/evanliu3594/dsh-md2pdf/main/icon.svg" width="96" height="96" alt="dsh-md2pdf">
+</p>
 
-[English](README.en.md) | 中文 | [npm](https://www.npmjs.com/package/dsh-md2pdf)
+<h1 align="center">dsh-md2pdf</h1>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/dsh-md2pdf"><img src="https://img.shields.io/npm/v/dsh-md2pdf.svg" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/dsh-md2pdf"><img src="https://img.shields.io/npm/dm/dsh-md2pdf.svg" alt="npm downloads"></a>
+  <a href="https://github.com/evanliu3594/dsh-md2pdf/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/dsh-md2pdf.svg" alt="license"></a>
+  <a href="https://github.com/evanliu3594/dsh-md2pdf/blob/main/package.json"><img src="https://img.shields.io/node/v/dsh-md2pdf.svg" alt="node version"></a>
+  <a href="https://www.dsh.so/artifact/dsh-md2pdf-3/?ref=badge"><img src="https://cdn.dsh.so/badge/dsh-md2pdf-3.svg" alt="dsh.so risk"></a>
+</p>
+
+<p align="center"><a href="https://github.com/evanliu3594/dsh-md2pdf/blob/main/README.en.md">English</a> | 中文</p>
 
 把 DeepSeek Harness 侧边栏里打开的 Markdown 导出成 PDF，PDF 写在源文件同目录。版式由可编辑的预设管理。
 
@@ -23,7 +35,7 @@
 
 | 红头公文 | 学术论文 | Lark |
 |---|---|---|
-| [![红头公文](docs/images/preset-gongwen.png)](samples/sample-gongwen.pdf) | [![学术论文](docs/images/preset-paper.png)](samples/sample-paper.pdf) | [![Lark](docs/images/preset-lark.png)](samples/sample-lark.pdf) |
+| [![红头公文](https://raw.githubusercontent.com/evanliu3594/dsh-md2pdf/main/docs/images/preset-gongwen.png)](https://github.com/evanliu3594/dsh-md2pdf/blob/main/samples/sample-gongwen.pdf) | [![学术论文](https://raw.githubusercontent.com/evanliu3594/dsh-md2pdf/main/docs/images/preset-paper.png)](https://github.com/evanliu3594/dsh-md2pdf/blob/main/samples/sample-paper.pdf) | [![Lark](https://raw.githubusercontent.com/evanliu3594/dsh-md2pdf/main/docs/images/preset-lark.png)](https://github.com/evanliu3594/dsh-md2pdf/blob/main/samples/sample-lark.pdf) |
 
 点图可看完整 PDF。三个文件都在 `samples/` 下。
 
@@ -31,12 +43,12 @@
 
 ## 安装
 
-插件已发布到 npm：[dsh-md2pdf](https://www.npmjs.com/package/dsh-md2pdf)，当前版本 0.1.0。
+插件已发布到 npm：[dsh-md2pdf](https://www.npmjs.com/package/dsh-md2pdf)，当前版本 0.1.1。
 
 在 DSH profile 的 `package.json` 里写版本范围：
 
 ```json
-{ "dependencies": { "dsh-md2pdf": "^0.1.0" } }
+{ "dependencies": { "dsh-md2pdf": "^0.1.1" } }
 ```
 
 ```powershell
@@ -136,11 +148,11 @@ pdf.toc: true
 
 ## 更多
 
-预设文件格式、迁移规则、样式分层、打印管线、路由与安全边界、完整限制列表，见 [docs/DESIGN.md](docs/DESIGN.md)。
+预设文件格式、迁移规则、样式分层、打印管线、路由与安全边界、完整限制列表，见 [docs/DESIGN.md](https://github.com/evanliu3594/dsh-md2pdf/blob/main/docs/DESIGN.md)。
 
 ## 许可与致谢
 
-MIT 许可，见 [LICENSE](LICENSE)。
+MIT 许可，见 [LICENSE](https://github.com/evanliu3594/dsh-md2pdf/blob/main/LICENSE)。
 
 Lark 预设的配色、字号阶梯、行距与间距取自 [imageslr/mweb-themes](https://github.com/imageslr/mweb-themes) 的公开设计参数。该仓库未声明开源许可，本项目没有复制其 SCSS，只按这些参数重写了打印用 CSS。
 
